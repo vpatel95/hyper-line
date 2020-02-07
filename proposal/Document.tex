@@ -1,0 +1,69 @@
+\documentclass[a4paper,10pt,twoside]{report}
+
+\usepackage{Packages}
+\usepackage[framed,numbered,autolinebreaks,useliterate]{Listings}
+
+\addto\captionsbritish{\renewcommand{\contentsname}{Table of Contents}}
+
+%\linenumbers
+
+\newcommand{\researchgroup}{COMP512 - Advanced Operating Systems}
+
+\newcommand{\shortdoctitle}{}
+\newcommand{\doctitle}{AVD Pipe}
+\newcommand{\docsubtitle}{AV Distributed Pipe}
+
+\newcommand{\authorone}{Aishwarye Omer}
+\newcommand{\sauthorone}{ado5146}
+\newcommand{\authortwo}{Ved Patel}
+\newcommand{\sauthortwo}{vmp5265}
+\newcommand{\keywords}{keyword1, keyword2, keyword3}
+\newcommand{\version}{Version 0.0.1}
+\newcommand{\monthYear}{February 2020}
+
+\newcommand{\firstCommitteeMember}{Dr. Linda Null}
+\newcommand{\secondCommitteeMember}{}
+\newcommand{\thirdCommitteeMember}{}
+
+\author{\me}
+
+\hypersetup
+{
+    pdfauthor   = {\authorone and \authortwo},
+    pdftitle    = {\shortdoctitle},
+    pdfsubject  = {\doctitle},
+    pdfkeywords = {\keywords}
+}
+
+\begin{document}
+
+\include{Titlepage}
+
+\normalsize
+
+\tableofcontents
+
+\chapter{Introduction}\label{chapter:Introduction}
+\setcounter{page}{0}
+\pagenumbering{arabic}
+\input{chapters/introduction.tex}
+
+\chapter{Problem Statement}\label{chapter:Problem Statement}
+\input{chapters/problem_statement.tex}
+
+\chapter{Design}\label{chapter:Design}
+\input{chapters/design.tex}
+
+\chapter{Timeline and Test Plan}\label{chapter:Test Plan}
+\input{chapters/timeline_and_test.tex}
+
+\chapter{Challenges}\label{chapter:Challenges}
+\input{chapters/challenges	.tex}
+
+\chapter{Expected Scenarios}\label{chapter:Expected Scenarios}
+\input{chapters/expected_scenarios.tex}
+
+%\bibliographystyle{unsrt}
+%\bibliography{References}
+
+\end{document}

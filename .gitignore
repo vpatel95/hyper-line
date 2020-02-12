@@ -56,3 +56,4 @@ dkms.conf
 # cscope and tags
 cscope.out
 tags
+.ycm_extra_conf.py

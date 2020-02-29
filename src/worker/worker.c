@@ -1,6 +1,6 @@
 #include "avd_pipe.h"
 
-int32_t user_init () {
+int32_t worker_init () {
 
     int32_t             rc;
     int32_t             srvr_fd;
@@ -9,7 +9,7 @@ int32_t user_init () {
 
     if (srvr_fd < 0) {
         rc = -errno;
-        print("[ERROR][CRITICAL] ::: Client socket setup failed: %s\n",
+        print("[ERROR][CRITICAL] ::: Worker socket setup failed: %s\n",
                 strerror(errno));
 
         goto error;
@@ -37,13 +37,13 @@ error:
 }
 */
 
-int32_t connect_server(user_t *user) {
+int32_t connect_server(worker_t *worker) {
 
     int32_t             rc = 0;
-    conn_info_t         *conn = &user->conn;
+    conn_info_t         *conn = &worker->conn;
     struct sockaddr_in  srvr_addr;
 
-    conn->sockfd = user_init();
+    conn->sockfd = worker_init();
 
     rc = inet_pton(AF_INET, conn->ip_addr_s, &srvr_addr.sin_addr.s_addr);
     if (rc == 0) {
@@ -73,7 +73,7 @@ int32_t connect_server(user_t *user) {
     memset(&rmsg, 0, sizeof(rmsg));
 
     set_type(msg.type, AVD_MSG_F_CTRL);
-    sprintf(msg.content.data, "Hello from Client");
+    sprintf(msg.content.data, "Hello from Worker");
     msg.size = strlen(msg.content.data);
 
     rc = send(conn->sockfd, &msg, sizeof(msg), 0);
@@ -102,10 +102,10 @@ error:
     return rc;
 }
 
-int32_t start_user (user_t *user) {
+int32_t start_worker (worker_t *worker) {
     int32_t         rc;
 
-    rc = connect_server(user);
+    rc = connect_server(worker);
     if (rc < 0) {
         print("[ERROR][CRITICAL] ::: Cannot establish connection with server: %s\n",
                 strerror(errno));
@@ -120,12 +120,12 @@ error:
 
 int32_t main (int32_t argc, char *argv[]) {
 
-    user_t          *user = (user_t *)malloc(sizeof(user_t *));
-    conn_info_t     *conn = &user->conn;
+    worker_t        *worker = (worker_t *)malloc(sizeof(worker_t *));
+    conn_info_t     *conn = &worker->conn;
 
     snprintf(conn->ip_addr_s, INET_ADDRSTRLEN, "%s", "71.114.127.203");
-    conn->port = 9000;
+    conn->port = 9001;
 
-    start_user(user);
+    start_worker(worker);
     return EXIT_SUCCESS;
 }

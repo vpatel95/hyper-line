@@ -19,32 +19,13 @@
 #include <sys/wait.h>
 #include <poll.h>
 #include <limits.h>
+#include <sys/time.h>
 
 #ifndef INFTIM
 #define INFTIM      (-1)
 #endif
 
-#ifdef HAVE_PTHREAD_H
 #include <pthread.h>
-#endif
-
-#define USER            1
-#define WORKER          2
-
-#define MAX_USER        2
-#define MAX_TASK        2
-#define MAX_SUBTASK     5
-#define MAX_WORKER      5
-
-#define MAX_USER_POLL   MAX_USER + 1
-#define MAX_WORKER_POLL MAX_WORKER + 1
-#define MAX_POLLER_SZ   max(MAX_USER_POLL,MAX_WORKER_POLL)
-
-#define MAX_POLL_SZ(type) ((type == USER) ? MAX_USER_POLL : MAX_WORKER_POLL)
-#define CLIENT_TYPE(type) ((type == USER) ? "User" : "Worker")
-
-#define MAX_CHUNK_SZ    256
-#define MAX_BUF_SZ      2048
 
 #ifndef abs
 #define abs(x)      ((x) < 0 ? -(x) : (x))
@@ -56,6 +37,14 @@
 
 #ifndef max
 #define max(a,b)    ((a) > (b) ? (a) : (b))
+#endif
+
+#ifndef likely
+#define likely(x)       __builtin_expect(!!(x), 1)
+#endif
+
+#ifndef unlikely
+#define unlikely(x)     __builtin_expect(!!(x), 0)
 #endif
 
 #define print(__fmt, ...)   do {                \
@@ -75,65 +64,112 @@
     exit(1);                \
 }
 
+
+#define USER            1
+#define WORKER          2
+
+#define MAX_USER        2
+#define MAX_TASK        2
+#define MAX_SUBTASK     5
+#define MAX_WORKER      5
+
+#define MAX_USER_POLL   MAX_USER + 1
+#define MAX_WORKER_POLL MAX_WORKER + 1
+#define MAX_POLLER_SZ   max(MAX_USER_POLL,MAX_WORKER_POLL)
+
+#define MAX_POLL_SZ(type) ((type == USER) ? MAX_USER_POLL : MAX_WORKER_POLL)
+#define CLIENT_TYPE(type) ((type == USER) ? "User" : "Worker")
+
+#define MAX_CHUNK_SZ    256
+#define MAX_BUF_SZ      2048
+
+// Message type flags
+#define AVD_MSG_F_FILE  (1 << 0)
+#define AVD_MSG_F_CTRL  (1 << 1)
+
+#define reset_type(type)        (type = 0)
+#define set_type(type, flag)    (type |= flag)
+#define unset_type(type, flag)  (type &= (~flag))
+#define is_type(type, flag)     (type & flag)
+
 typedef void (sigfunc)(int);
 
 typedef struct conn_info_s {
-    int32_t             sockfd;
     uint16_t            port;
+    int32_t             sockfd;
     char                ip_addr_s[INET_ADDRSTRLEN];
-} conn_info_t;
+} __attribute__((packed)) conn_info_t;
 
 // TODO
 typedef struct input_s {
     int input;
-} input_t;
+} __attribute__((packed)) input_t;
 
 // TODO
 typedef struct result_s {
     int result;
-} result_t;
+} __attribute__((packed)) result_t;
 
 // TODO
 typedef struct peer_s {
     int peer;
-} peer_t;
+} __attribute__((packed)) peer_t;
 
 typedef struct worker_s {
     int32_t         id;
     peer_t          peers[2];
     conn_info_t     conn;
-} worker_t;
+} __attribute__((packed)) worker_t;
 
 typedef struct stage_s {
     worker_t    worker;
     input_t    input;
     result_t    result;
-} stage_t;
+} __attribute__((packed)) stage_t;
 
 typedef struct task_s {
     int32_t     id;
     int32_t     num_subtasks;
     stage_t     stages;
-} task_t;
+} __attribute__((packed)) task_t;
 
 typedef struct user_s {
     int32_t         id;
+    int32_t         poll_id;
     int32_t         num_tasks;
     task_t          tasks[MAX_TASK];
     conn_info_t     conn;
-} user_t;
+} __attribute__((packed)) user_t;
 
 typedef struct server_s {
     uint8_t             type;
-    int32_t             n_users;
-    int32_t             n_workers;
+    union {
+        int32_t             n_users;
+        int32_t             n_workers;
+    };
     union {
         user_t          users[MAX_USER];
         worker_t        workers[MAX_WORKER];
     };
     struct pollfd       poller[MAX_POLLER_SZ];
     conn_info_t         conn;
-} server_t;
+} __attribute__((packed)) server_t;
+
+typedef struct content_s {
+    char        data[256];
+} __attribute__((packed)) content_t;
+
+typedef struct message_s {
+    int8_t      type;
+    size_t      size;
+    content_t   content;
+} __attribute__((packed)) message_t;
+
+typedef struct args_s {
+    server_t    srvr;
+    char        addr[16];
+    int         port;
+} __attribute__((packed)) args_t;
 
 int32_t get_socket(int32_t family, int32_t type, int32_t protocol) {
 
@@ -252,9 +288,9 @@ sigfunc * signal_intr (int32_t signo, sigfunc *func) {
 }
 
 void sig_int_handler(int32_t signo) {
-    print("\nClosing server in 5 secs\n");
-    sleep(5);
-    exit(1);
+    print("\nClosing server in 1 secs\n");
+    sleep(1);
+    exit(EXIT_SUCCESS);
 }
 
 #endif

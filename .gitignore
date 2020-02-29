@@ -37,6 +37,7 @@
 *.hex
 user
 server
+worker
 
 # Debug files
 *.dSYM/

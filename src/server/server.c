@@ -7,6 +7,7 @@
 
 // Global variable definitions
 uint32_t    g_start_processing = init_processing;
+char        *g_conf_file_name = NULL;
 
 int32_t server_init(conn_info_t *conn, int32_t type) {
 
@@ -74,7 +75,7 @@ int32_t get_or_create_user_sessions() {
 
 void worker_communications(server_t *srvr, int max_idx, int *nready) {
 
-    int32_t         i, rc;
+    int32_t         i;
     int32_t         n;
     char            rbuf[MAX_BUF_SZ];
 
@@ -120,7 +121,7 @@ void worker_communications(server_t *srvr, int max_idx, int *nready) {
 
 void user_communications(server_t *srvr, int max_idx, int *nready) {
 
-    int32_t         i, rc;
+    int32_t         i;
     int32_t         n;
     message_t       rmsg;
     memset(&rmsg, 0, sizeof(rmsg));
@@ -413,6 +414,8 @@ error:
 }
 
 int32_t main (int32_t argc, char const *argv[]) {
+    pthread_t   threads[2];
+    conf_parse_info_t cfg;
     args_t      args[2];
 #define u_args  args[0]
 #define w_args  args[1]
@@ -420,31 +423,44 @@ int32_t main (int32_t argc, char const *argv[]) {
 #define u_srvr  srvr[0]
 #define w_srvr  srvr[1]
 
-    pthread_t   threads[2];
+    if (argc < 2) {
+        print("Usage %s <run-time>\n", basename((char *)argv[0]));
+        exit(EXIT_FAILURE);
+    }
+
+    signal_intr(SIGINT, sig_int_handler);
 
     u_srvr = (server_t *) malloc (sizeof(server_t *));
     w_srvr = (server_t *) malloc (sizeof(server_t *));
 
-    signal_intr(SIGINT, sig_int_handler);
+    memset(&cfg, 0, sizeof(cfg));
+
+    cfg.type = SERVER;
+    g_conf_file_name = (char *)argv[1];
+
+    if (0 != process_config_file(g_conf_file_name, &cfg)) {
+        log(L_SRVR, CRITICAL, "Failed to parse config file");
+        exit(EXIT_FAILURE);
+    }
 
     u_srvr->type = USER;
     w_srvr->type = WORKER;
 
     u_args.srvr = *u_srvr;
-    sprintf(u_args.addr, "192.168.1.200");
-    u_args.port = 9000;
+    snprintf(u_args.addr,INET_ADDRSTRLEN, "%s", cfg.sconf.addr);
+    u_args.port = cfg.sconf.uport;
 
     w_args.srvr = *w_srvr;
-    sprintf(w_args.addr, "192.168.1.200");
-    w_args.port = 9001;
+    snprintf(w_args.addr,INET_ADDRSTRLEN, "%s", cfg.sconf.addr);
+    w_args.port = cfg.sconf.wport;
 
     if (0 != pthread_create(&threads[0], NULL, start_server, (void *)&u_args)) {
-        print("[ERROR][CRITICAL] ::: User server thread creation failed");
+        log(L_SRVR, CRITICAL, "User server thread creation failed");
         exit(EXIT_FAILURE);
     }
 
     if (0 != pthread_create(&threads[1], NULL, start_server, (void *)&w_args)) {
-        print("[ERROR][CRITICAL] ::: User server thread creation failed");
+        log(L_SRVR, CRITICAL, "Worker server thread creation failed");
         exit(EXIT_FAILURE);
     }
 

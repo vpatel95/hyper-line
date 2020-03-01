@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <libgen.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -21,11 +22,14 @@
 #include <limits.h>
 #include <sys/time.h>
 
+#include <pthread.h>
+
+#include "cJSON.h"
+
 #ifndef INFTIM
 #define INFTIM      (-1)
 #endif
 
-#include <pthread.h>
 
 #ifndef abs
 #define abs(x)      ((x) < 0 ? -(x) : (x))
@@ -65,8 +69,18 @@
 }
 
 
+#define INFO     "INFO"
+#define WARN     "WARN"
+#define ERROR    "ERROR"
+#define CRITICAL "CRITICAL"
+#define L_SRVR   "SERVER"
+#define L_USER   "USER"
+#define L_WORKER "WORKER"
+#define log(proc, level, msg) print("[%s][%s][%s] ::: %s ", get_curr_time(), proc, level, msg)
+
 #define USER            1
 #define WORKER          2
+#define SERVER          3
 
 #define MAX_USER        2
 #define MAX_TASK        2
@@ -170,6 +184,31 @@ typedef struct args_s {
     char        addr[16];
     int         port;
 } __attribute__((packed)) args_t;
+
+typedef struct server_conf_s {
+    uint16_t    uport;
+    uint16_t    wport;
+    char        addr[INET_ADDRSTRLEN];
+} __attribute__((packed)) server_conf_t;
+
+typedef struct user_conf_s {
+    uint16_t    port;
+    char        addr[INET_ADDRSTRLEN];
+} __attribute__((packed)) user_conf_t;
+
+typedef struct worker_conf_s {
+    uint16_t    port;
+    char        addr[INET_ADDRSTRLEN];
+} __attribute__((packed)) worker_conf_t;
+
+typedef struct conf_parse_info_s {
+    int8_t      type;
+    union {
+        server_conf_t   sconf;
+        user_conf_t     uconf;
+        worker_conf_t   wconf;
+    };
+} __attribute__((packed)) conf_parse_info_t;
 
 int32_t get_socket(int32_t family, int32_t type, int32_t protocol) {
 
@@ -291,6 +330,159 @@ void sig_int_handler(int32_t signo) {
     print("\nClosing server in 1 secs\n");
     sleep(1);
     exit(EXIT_SUCCESS);
+}
+
+char * get_curr_time() {
+    time_t rawtime;
+    struct tm * timeinfo;
+
+    time ( &rawtime );
+    timeinfo = localtime ( &rawtime );
+    return asctime(timeinfo);
+}
+
+static size_t filesize (FILE *f) {
+    size_t  c = ftell(f);
+    size_t  l;
+    fseek(f, 0L, SEEK_END);
+    l = ftell(f);
+    fseek(f, c, SEEK_SET);
+    return l;
+}
+
+static int32_t parse_srvr_cfg (cJSON *obj, conf_parse_info_t *cfg) {
+    cJSON   *v, *tobj;
+
+    tobj = cJSON_GetObjectItem(obj, "server");
+    if (!tobj) {
+        return -1;
+    }
+
+    v = cJSON_GetObjectItem(tobj, "uport");
+    if ((!v) || (!v->valueint)) {
+        log(L_SRVR, ERROR, "Failed to find 'uport' in server config");
+        return -1;
+    }
+    cfg->sconf.uport = v->valueint;
+
+    v = cJSON_GetObjectItem(tobj, "wport");
+    if ((!v) || (!v->valueint)) {
+        log(L_SRVR, ERROR, "Failed to find 'wport' in server config");
+        return -1;
+    }
+    cfg->sconf.wport = v->valueint;
+
+    v = cJSON_GetObjectItem(tobj, "addr");
+    if ((!v) || (!v->valuestring)) {
+        log(L_SRVR, ERROR, "Failed to find 'addr' in server config");
+        return -1;
+    }
+    snprintf(cfg->sconf.addr, INET_ADDRSTRLEN, "%s", v->valuestring);
+
+    return 0;
+}
+
+// TODO:
+static int32_t parse_user_cfg (cJSON *obj, conf_parse_info_t *cfg) {
+    cJSON   *v, *tobj;
+
+    tobj = cJSON_GetObjectItem(obj, "user");
+    if (!tobj) {
+        return -1;
+    }
+
+    v = cJSON_GetObjectItem(tobj, "port");
+    if ((!v) || (!v->valueint)) {
+        log(L_SRVR, ERROR, "Failed to find 'port' in user config");
+        return -1;
+    }
+    cfg->uconf.port = v->valueint;
+
+    v = cJSON_GetObjectItem(tobj, "addr");
+    if ((!v) || (!v->valuestring)) {
+        log(L_SRVR, ERROR, "Failed to find 'addr' in user config");
+        return -1;
+    }
+    snprintf(cfg->uconf.addr, INET_ADDRSTRLEN, "%s", v->valuestring);
+
+    return 0;
+}
+
+// TODO:
+static int32_t parse_wrkr_cfg (cJSON *obj, conf_parse_info_t *cfg) {
+    cJSON   *v, *tobj;
+
+    tobj = cJSON_GetObjectItem(obj, "worker");
+    if (!tobj) {
+        return -1;
+    }
+
+    v = cJSON_GetObjectItem(tobj, "port");
+    if ((!v) || (!v->valueint)) {
+        log(L_SRVR, ERROR, "Failed to find 'port' in worker config");
+        return -1;
+    }
+    cfg->wconf.port = v->valueint;
+
+    v = cJSON_GetObjectItem(tobj, "addr");
+    if ((!v) || (!v->valuestring)) {
+        log(L_SRVR, ERROR, "Failed to find 'addr' in worker config");
+        return -1;
+    }
+    snprintf(cfg->wconf.addr, INET_ADDRSTRLEN, "%s", v->valuestring);
+
+    return 0;
+}
+
+int32_t process_config_file (char *fname, conf_parse_info_t *cfg) {
+    FILE        *fp = fopen(fname, "r");
+    char        *buf = NULL;
+    cJSON       *json_obj = NULL;
+    size_t      len;
+    int32_t     rc = -1;
+
+    if (NULL == fp) {
+        log(L_SRVR, CRITICAL, "Failed to open config file");
+        goto bail;
+    }
+
+    len = filesize(fp);
+    buf = (char *)malloc(len);
+    if (!buf) {
+        log(L_SRVR, ERROR, "Failed to allocate memory while reading file");
+        goto bail;
+    }
+
+    memset(buf, 0, sizeof(len));
+    if (len != fread(buf, 1, len, fp)) {
+        log(L_SRVR, ERROR, "Failed to read all the data from the file");
+        goto bail;
+    }
+
+    if (NULL == (json_obj = cJSON_Parse(buf))) {
+        log(L_SRVR, ERROR, "Failed to parse JSON of config");
+        goto bail;
+    }
+
+    switch (cfg->type) {
+        case SERVER:
+            rc = parse_srvr_cfg(json_obj, cfg);
+            break;
+        case USER:
+            rc = parse_user_cfg(json_obj, cfg);
+            break;
+        case WORKER:
+            rc = parse_wrkr_cfg(json_obj, cfg);
+            break;
+    }
+
+
+bail:
+    if (json_obj) { cJSON_Delete(json_obj); json_obj = NULL; }
+    if (buf) { free(buf); buf = NULL; }
+    if (fp) { fclose(fp); fp = NULL; }
+
+    return rc;
 }
 
 #endif

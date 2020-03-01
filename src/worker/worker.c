@@ -1,5 +1,7 @@
 #include "avd_pipe.h"
 
+char    *g_conf_file_name = NULL;
+
 int32_t worker_init () {
 
     int32_t             rc;
@@ -122,9 +124,22 @@ int32_t main (int32_t argc, char *argv[]) {
 
     worker_t        *worker = (worker_t *)malloc(sizeof(worker_t *));
     conn_info_t     *conn = &worker->conn;
+    conf_parse_info_t   cfg;
 
-    snprintf(conn->ip_addr_s, INET_ADDRSTRLEN, "%s", "71.114.127.203");
-    conn->port = 9001;
+    signal_intr(SIGINT, sig_int_handler);
+
+    memset(&cfg, 0, sizeof(cfg));
+
+    cfg.type = WORKER;
+    g_conf_file_name = (char *)argv[1];
+
+    if (0 != process_config_file(g_conf_file_name, &cfg)) {
+        print("Failed to parse config file %s\n", argv[1]);
+        exit(EXIT_FAILURE);
+    }
+
+    snprintf(conn->ip_addr_s, INET_ADDRSTRLEN, "%s", cfg.wconf.addr);
+    conn->port = cfg.wconf.port;
 
     start_worker(worker);
     return EXIT_SUCCESS;

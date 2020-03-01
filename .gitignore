@@ -35,9 +35,9 @@
 *.i*86
 *.x86_64
 *.hex
-user
-server
-worker
+avd_srvr
+avd_user
+avd_wrkr
 
 # Debug files
 *.dSYM/

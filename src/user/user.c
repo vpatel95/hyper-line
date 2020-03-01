@@ -1,5 +1,7 @@
 #include "avd_pipe.h"
 
+char    *g_conf_file_name = NULL;
+
 int32_t user_init () {
 
     int32_t             rc;
@@ -120,11 +122,24 @@ error:
 
 int32_t main (int32_t argc, char *argv[]) {
 
-    user_t          *user = (user_t *)malloc(sizeof(user_t *));
-    conn_info_t     *conn = &user->conn;
+    user_t              *user = (user_t *)malloc(sizeof(user_t *));
+    conn_info_t         *conn = &user->conn;
+    conf_parse_info_t   cfg;
 
-    snprintf(conn->ip_addr_s, INET_ADDRSTRLEN, "%s", "71.114.127.203");
-    conn->port = 9000;
+    signal_intr(SIGINT, sig_int_handler);
+
+    memset(&cfg, 0, sizeof(cfg));
+
+    cfg.type = USER;
+    g_conf_file_name = (char *)argv[1];
+
+    if (0 != process_config_file(g_conf_file_name, &cfg)) {
+        print("Failed to parse config file %s\n", argv[1]);
+        exit(EXIT_FAILURE);
+    }
+
+    snprintf(conn->ip_addr_s, INET_ADDRSTRLEN, "%s", cfg.uconf.addr);
+    conn->port = cfg.uconf.port;
 
     start_user(user);
     return EXIT_SUCCESS;

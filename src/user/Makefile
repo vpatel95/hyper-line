@@ -1,20 +1,9 @@
-CC=gcc
-TARGET_APP=avd_user
-CFLAGS = -ggdb3 -Wall
-INC = -I ../include
+ROOT = ../
+
+TARGETS = ../build/avd_user
+
 LIBS = -lm
-OBJS = user.o ../lib/cJSON.o
+INCLUDE = -I ../include
+CUSTOM_LIBS = ../lib/cJSON.c
 
-all: $(TARGET_APP)
-
-$(TARGET_APP): $(OBJS)
-	@$(CC) $(CFLAGS) $(INC) $(OBJS) -o $@ $(LIBS)
-	@rm -f $(OBJS)
-
-%.o: %.c
-	@$(CC) $(INC) -c -o $@ $< $(CFLAGS)
-
-.PHONY: clean
-
-clean:
-	@rm -f $(OBJS) $(TARGET_APP)
+include $(ROOT)/common.mk

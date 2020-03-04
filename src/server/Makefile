@@ -1,7 +1,10 @@
 ROOT = ../
+
 TARGETS = ../build/avd_server
-INCLUDE = -I ../include
+LIB_DIR = ../lib
+CUSTOM_LIBS = log.c cJSON.c
+
 LIBS = -pthread -lm
-CUSTOM_LIBS = ../lib/cJSON.c
+INCLUDE = -I ../include
 
 include $(ROOT)/common.mk

@@ -20,11 +20,11 @@
 #include <sys/wait.h>
 #include <poll.h>
 #include <limits.h>
-#include <sys/time.h>
 
 #include <pthread.h>
 
 #include "cJSON.h"
+#include "log.h"
 
 #ifndef INFTIM
 #define INFTIM      (-1)
@@ -68,15 +68,7 @@
     exit(1);                \
 }
 
-
-#define INFO     "INFO"
-#define WARN     "WARN"
-#define ERROR    "ERROR"
-#define CRITICAL "CRITICAL"
-#define L_SRVR   "SERVER"
-#define L_USER   "USER"
-#define L_WORKER "WORKER"
-#define log(proc, level, msg) print("[%s][%s][%s] ::: %s ", get_curr_time(), proc, level, msg)
+#define SESSION_FILE    "/opt/avd-pipe/session.json"
 
 #define USER            1
 #define WORKER          2
@@ -84,7 +76,7 @@
 
 #define MAX_USER        2
 #define MAX_TASK        2
-#define MAX_SUBTASK     5
+#define MAX_STAGES      5
 #define MAX_WORKER      5
 
 #define MAX_USER_POLL   MAX_USER + 1
@@ -94,17 +86,20 @@
 #define MAX_POLL_SZ(type) ((type == USER) ? MAX_USER_POLL : MAX_WORKER_POLL)
 #define CLIENT_TYPE(type) ((type == USER) ? "User" : "Worker")
 
-#define MAX_CHUNK_SZ    256
-#define MAX_BUF_SZ      2048
+#define MAX_BUF_SZ          2048
+#define MAX_CHUNK_SZ        256
+#define MAX_FILE_NAME_SZ    50
 
 // Message type flags
-#define AVD_MSG_F_FILE  (1 << 0)
-#define AVD_MSG_F_CTRL  (1 << 1)
+#define AVD_MSG_F_NEW_CON   (1 << 0)
+#define AVD_MSG_F_RE_CON    (1 << 1)
+#define AVD_MSG_F_FILE      (1 << 2)
+#define AVD_MSG_F_CTRL      (1 << 3)
 
-#define reset_type(type)        (type = 0)
-#define set_type(type, flag)    (type |= flag)
-#define unset_type(type, flag)  (type &= (~flag))
-#define is_type(type, flag)     (type & flag)
+#define reset_msg_type(type)        (type = 0)
+#define set_msg_type(type, flag)    (type |= flag)
+#define unset_msg_type(type, flag)  (type &= (~flag))
+#define is_msg_type(type, flag)     (type & flag)
 
 typedef void (sigfunc)(int);
 
@@ -116,7 +111,7 @@ typedef struct conn_info_s {
 
 // TODO
 typedef struct input_s {
-    int input;
+    char    *input;
 } __attribute__((packed)) input_t;
 
 // TODO
@@ -136,15 +131,16 @@ typedef struct worker_s {
 } __attribute__((packed)) worker_t;
 
 typedef struct stage_s {
+    int32_t     id;
     worker_t    worker;
-    input_t    input;
+    input_t     input;
     result_t    result;
 } __attribute__((packed)) stage_t;
 
 typedef struct task_s {
     int32_t     id;
-    int32_t     num_subtasks;
-    stage_t     stages;
+    int32_t     num_stages;
+    stage_t     stages[MAX_STAGES];
 } __attribute__((packed)) task_t;
 
 typedef struct user_s {
@@ -170,7 +166,7 @@ typedef struct server_s {
 } __attribute__((packed)) server_t;
 
 typedef struct content_s {
-    char        data[256];
+    char        data[MAX_CHUNK_SZ];
 } __attribute__((packed)) content_t;
 
 typedef struct message_s {
@@ -181,7 +177,7 @@ typedef struct message_s {
 
 typedef struct args_s {
     server_t    srvr;
-    char        addr[16];
+    char        addr[INET_ADDRSTRLEN];
     int         port;
 } __attribute__((packed)) args_t;
 
@@ -189,16 +185,26 @@ typedef struct server_conf_s {
     uint16_t    uport;
     uint16_t    wport;
     char        addr[INET_ADDRSTRLEN];
+    char        log_ufile[MAX_FILE_NAME_SZ];
+    char        log_wfile[MAX_FILE_NAME_SZ];
+    int32_t     log_level;
+    int32_t     log_quiet;
 } __attribute__((packed)) server_conf_t;
 
 typedef struct user_conf_s {
     uint16_t    port;
     char        addr[INET_ADDRSTRLEN];
+    char        log_file[MAX_FILE_NAME_SZ];
+    int32_t     log_level;
+    int32_t     log_quiet;
 } __attribute__((packed)) user_conf_t;
 
 typedef struct worker_conf_s {
     uint16_t    port;
     char        addr[INET_ADDRSTRLEN];
+    char        log_file[MAX_FILE_NAME_SZ];
+    int32_t     log_level;
+    int32_t     log_quiet;
 } __attribute__((packed)) worker_conf_t;
 
 typedef struct conf_parse_info_s {
@@ -332,15 +338,6 @@ void sig_int_handler(int32_t signo) {
     exit(EXIT_SUCCESS);
 }
 
-char * get_curr_time() {
-    time_t rawtime;
-    struct tm * timeinfo;
-
-    time ( &rawtime );
-    timeinfo = localtime ( &rawtime );
-    return asctime(timeinfo);
-}
-
 static size_t filesize (FILE *f) {
     size_t  c = ftell(f);
     size_t  l;
@@ -358,23 +355,51 @@ static int32_t parse_srvr_cfg (cJSON *obj, conf_parse_info_t *cfg) {
         return -1;
     }
 
+    v = cJSON_GetObjectItem(tobj, "log_user_file");
+    if ((!v) || (!v->valuestring)) {
+        avd_log_error("Failed to find 'log_user_file' in server config");
+        return -1;
+    }
+    snprintf(cfg->sconf.log_ufile, strlen(v->valuestring)+1, "%s", v->valuestring);
+
+    v = cJSON_GetObjectItem(tobj, "log_worker_file");
+    if ((!v) || (!v->valuestring)) {
+        avd_log_error("Failed to find 'log_worker_file' in server config");
+        return -1;
+    }
+    snprintf(cfg->sconf.log_wfile, strlen(v->valuestring)+1, "%s", v->valuestring);
+
+    v = cJSON_GetObjectItem(tobj, "log_level");
+    if (!v) {
+        avd_log_error("Failed to find 'log_level' in server config");
+        return -1;
+    }
+    cfg->sconf.log_level = v->valueint;
+
+    v = cJSON_GetObjectItem(tobj, "log_quiet");
+    if (!v) {
+        avd_log_error("Failed to find 'log_quiet' in server config");
+        return -1;
+    }
+    cfg->sconf.log_quiet = v->valueint;
+
     v = cJSON_GetObjectItem(tobj, "uport");
-    if ((!v) || (!v->valueint)) {
-        log(L_SRVR, ERROR, "Failed to find 'uport' in server config");
+    if (!v) {
+        avd_log_error("Failed to find 'uport' in server config");
         return -1;
     }
     cfg->sconf.uport = v->valueint;
 
     v = cJSON_GetObjectItem(tobj, "wport");
-    if ((!v) || (!v->valueint)) {
-        log(L_SRVR, ERROR, "Failed to find 'wport' in server config");
+    if (!v) {
+        avd_log_error("Failed to find 'wport' in server config");
         return -1;
     }
     cfg->sconf.wport = v->valueint;
 
     v = cJSON_GetObjectItem(tobj, "addr");
     if ((!v) || (!v->valuestring)) {
-        log(L_SRVR, ERROR, "Failed to find 'addr' in server config");
+        avd_log_error("Failed to find 'addr' in server config");
         return -1;
     }
     snprintf(cfg->sconf.addr, INET_ADDRSTRLEN, "%s", v->valuestring);
@@ -382,7 +407,6 @@ static int32_t parse_srvr_cfg (cJSON *obj, conf_parse_info_t *cfg) {
     return 0;
 }
 
-// TODO:
 static int32_t parse_user_cfg (cJSON *obj, conf_parse_info_t *cfg) {
     cJSON   *v, *tobj;
 
@@ -391,24 +415,44 @@ static int32_t parse_user_cfg (cJSON *obj, conf_parse_info_t *cfg) {
         return -1;
     }
 
-    v = cJSON_GetObjectItem(tobj, "port");
-    if ((!v) || (!v->valueint)) {
-        log(L_SRVR, ERROR, "Failed to find 'port' in user config");
+    v = cJSON_GetObjectItem(tobj, "log_file");
+    if ((!v) || (!v->valuestring)) {
+        avd_log_error("Failed to find 'log_file' in user config");
+        return -1;
+    }
+    snprintf(cfg->uconf.log_file, strlen(v->valuestring)+1, "%s", v->valuestring);
+
+    v = cJSON_GetObjectItem(tobj, "log_level");
+    if (!v) {
+        avd_log_error("Failed to find 'log_level' in user config");
+        return -1;
+    }
+    cfg->uconf.log_level = v->valueint;
+
+    v = cJSON_GetObjectItem(tobj, "log_quiet");
+    if (!v) {
+        avd_log_error("Failed to find 'log_quiet' in user config");
+        return -1;
+    }
+    cfg->uconf.log_quiet = v->valueint;
+
+    v = cJSON_GetObjectItem(tobj, "srvr_port");
+    if (!v) {
+        avd_log_error("Failed to find 'srvr_port' in user config");
         return -1;
     }
     cfg->uconf.port = v->valueint;
 
-    v = cJSON_GetObjectItem(tobj, "addr");
+    v = cJSON_GetObjectItem(tobj, "srvr_addr");
     if ((!v) || (!v->valuestring)) {
-        log(L_SRVR, ERROR, "Failed to find 'addr' in user config");
+        avd_log_error("Failed to find 'srvr_addr' in user config");
         return -1;
     }
-    snprintf(cfg->uconf.addr, INET_ADDRSTRLEN, "%s", v->valuestring);
+    snprintf(cfg->uconf.addr, strlen(v->valuestring)+1, "%s", v->valuestring);
 
     return 0;
 }
 
-// TODO:
 static int32_t parse_wrkr_cfg (cJSON *obj, conf_parse_info_t *cfg) {
     cJSON   *v, *tobj;
 
@@ -417,16 +461,37 @@ static int32_t parse_wrkr_cfg (cJSON *obj, conf_parse_info_t *cfg) {
         return -1;
     }
 
+    v = cJSON_GetObjectItem(tobj, "log_file");
+    if ((!v) || (!v->valuestring)) {
+        avd_log_error("Failed to find 'log_file' in worker config");
+        return -1;
+    }
+    snprintf(cfg->wconf.log_file, strlen(v->valuestring)+1, "%s", v->valuestring);
+
+    v = cJSON_GetObjectItem(tobj, "log_level");
+    if (!v) {
+        avd_log_error("Failed to find 'log_level' in worker config");
+        return -1;
+    }
+    cfg->wconf.log_level = v->valueint;
+
+    v = cJSON_GetObjectItem(tobj, "log_quiet");
+    if (!v) {
+        avd_log_error("Failed to find 'log_quiet' in worker config");
+        return -1;
+    }
+    cfg->wconf.log_quiet = v->valueint;
+
     v = cJSON_GetObjectItem(tobj, "port");
-    if ((!v) || (!v->valueint)) {
-        log(L_SRVR, ERROR, "Failed to find 'port' in worker config");
+    if (!v) {
+        avd_log_error("Failed to find 'port' in worker config");
         return -1;
     }
     cfg->wconf.port = v->valueint;
 
     v = cJSON_GetObjectItem(tobj, "addr");
     if ((!v) || (!v->valuestring)) {
-        log(L_SRVR, ERROR, "Failed to find 'addr' in worker config");
+        avd_log_error("Failed to find 'addr' in worker config");
         return -1;
     }
     snprintf(cfg->wconf.addr, INET_ADDRSTRLEN, "%s", v->valuestring);
@@ -434,33 +499,45 @@ static int32_t parse_wrkr_cfg (cJSON *obj, conf_parse_info_t *cfg) {
     return 0;
 }
 
-int32_t process_config_file (char *fname, conf_parse_info_t *cfg) {
+cJSON * parse_json (char *fname) {
     FILE        *fp = fopen(fname, "r");
     char        *buf = NULL;
     cJSON       *json_obj = NULL;
     size_t      len;
-    int32_t     rc = -1;
 
     if (NULL == fp) {
-        log(L_SRVR, CRITICAL, "Failed to open config file");
+        avd_log_fatal("Failed to open config file");
         goto bail;
     }
 
     len = filesize(fp);
     buf = (char *)malloc(len);
     if (!buf) {
-        log(L_SRVR, ERROR, "Failed to allocate memory while reading file");
+        avd_log_error("Failed to allocate memory while reading file");
         goto bail;
     }
 
     memset(buf, 0, sizeof(len));
     if (len != fread(buf, 1, len, fp)) {
-        log(L_SRVR, ERROR, "Failed to read all the data from the file");
+        avd_log_error("Failed to read all the data from the file");
         goto bail;
     }
 
-    if (NULL == (json_obj = cJSON_Parse(buf))) {
-        log(L_SRVR, ERROR, "Failed to parse JSON of config");
+    json_obj = cJSON_Parse(buf);
+
+bail:
+    if (buf) { free(buf); buf = NULL; }
+    if (fp) { fclose(fp); fp = NULL; }
+
+    return json_obj;
+}
+
+int32_t process_config_file (char *fname, conf_parse_info_t *cfg) {
+    cJSON       *json_obj = NULL;
+    int32_t     rc = -1;
+
+    if (NULL == (json_obj = parse_json(fname))) {
+        avd_log_error("Failed to parse JSON of config");
         goto bail;
     }
 
@@ -479,10 +556,14 @@ int32_t process_config_file (char *fname, conf_parse_info_t *cfg) {
 
 bail:
     if (json_obj) { cJSON_Delete(json_obj); json_obj = NULL; }
-    if (buf) { free(buf); buf = NULL; }
-    if (fp) { fclose(fp); fp = NULL; }
 
     return rc;
+}
+
+bool file_exists(char *fname, int flag) {
+    if (0 == access(fname, flag))
+        return true;
+    return false;
 }
 
 #endif

@@ -68,7 +68,12 @@ error:
     return rc;
 }
 
-int32_t get_or_create_user_sessions() {
+int32_t get_user_session() {
+
+    return 0;
+}
+
+int32_t create_user_session() {
 
     return 0;
 }
@@ -292,7 +297,7 @@ int32_t connect_user(server_t *srvr, int32_t *max_idx, int32_t *max_user_idx) {
                 // is available in the file. In other words save the state
                 // of the user periodically and for FAULT TOLERENCE
 
-                //get_or_create_user_session();
+                // get_or_create_user_session();
                 user->conn.sockfd = user_fd;
                 user->id = (*max_user_idx + 1);
                 user->conn.port = sock_ntop_port((struct sockaddr *)&user_addr);
@@ -419,7 +424,7 @@ int32_t main (int32_t argc, char const *argv[]) {
     args_t      args[2];
 #define u_args  args[0]
 #define w_args  args[1]
-    server_t    *srvr[2];
+    server_t    srvr[2];
 #define u_srvr  srvr[0]
 #define w_srvr  srvr[1]
 
@@ -430,37 +435,36 @@ int32_t main (int32_t argc, char const *argv[]) {
 
     signal_intr(SIGINT, sig_int_handler);
 
-    u_srvr = (server_t *) malloc (sizeof(server_t *));
-    w_srvr = (server_t *) malloc (sizeof(server_t *));
-
+    memset(&u_srvr, 0, sizeof(u_srvr));
+    memset(&w_srvr, 0, sizeof(u_srvr));
     memset(&cfg, 0, sizeof(cfg));
 
     cfg.type = SERVER;
     g_conf_file_name = (char *)argv[1];
 
     if (0 != process_config_file(g_conf_file_name, &cfg)) {
-        log(L_SRVR, CRITICAL, "Failed to parse config file");
+        avd_log_fatal("Failed to parse config file");
         exit(EXIT_FAILURE);
     }
 
-    u_srvr->type = USER;
-    w_srvr->type = WORKER;
+    u_srvr.type = USER;
+    w_srvr.type = WORKER;
 
-    u_args.srvr = *u_srvr;
+    u_args.srvr = u_srvr;
     snprintf(u_args.addr,INET_ADDRSTRLEN, "%s", cfg.sconf.addr);
     u_args.port = cfg.sconf.uport;
 
-    w_args.srvr = *w_srvr;
+    w_args.srvr = w_srvr;
     snprintf(w_args.addr,INET_ADDRSTRLEN, "%s", cfg.sconf.addr);
     w_args.port = cfg.sconf.wport;
 
     if (0 != pthread_create(&threads[0], NULL, start_server, (void *)&u_args)) {
-        log(L_SRVR, CRITICAL, "User server thread creation failed");
+        avd_log_fatal("User server thread creation failed");
         exit(EXIT_FAILURE);
     }
 
     if (0 != pthread_create(&threads[1], NULL, start_server, (void *)&w_args)) {
-        log(L_SRVR, CRITICAL, "Worker server thread creation failed");
+        avd_log_fatal("Worker server thread creation failed");
         exit(EXIT_FAILURE);
     }
 

@@ -74,7 +74,7 @@ int32_t connect_server(worker_t *worker) {
     memset(&msg, 0, sizeof(msg));
     memset(&rmsg, 0, sizeof(rmsg));
 
-    set_type(msg.type, AVD_MSG_F_CTRL);
+    set_msg_type(msg.type, AVD_MSG_F_CTRL);
     sprintf(msg.content.data, "Hello from Worker");
     msg.size = strlen(msg.content.data);
 
@@ -122,8 +122,9 @@ error:
 
 int32_t main (int32_t argc, char *argv[]) {
 
-    worker_t        *worker = (worker_t *)malloc(sizeof(worker_t *));
-    conn_info_t     *conn = &worker->conn;
+    worker_t        worker;
+    memset(&worker, 0, sizeof(worker));
+    conn_info_t     conn = worker.conn;
     conf_parse_info_t   cfg;
 
     signal_intr(SIGINT, sig_int_handler);
@@ -138,9 +139,9 @@ int32_t main (int32_t argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    snprintf(conn->ip_addr_s, INET_ADDRSTRLEN, "%s", cfg.wconf.addr);
-    conn->port = cfg.wconf.port;
+    snprintf(conn.ip_addr_s, INET_ADDRSTRLEN, "%s", cfg.wconf.addr);
+    conn.port = cfg.wconf.port;
 
-    start_worker(worker);
+    start_worker(&worker);
     return EXIT_SUCCESS;
 }

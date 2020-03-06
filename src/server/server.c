@@ -1,4 +1,6 @@
 #include "avd_pipe.h"
+#include "log.h"
+#include "session.h"
 
 #define num_threads         2
 #define init_processing     0
@@ -6,8 +8,9 @@
 #define enter_processing    all_threads_ready + 1
 
 // Global variable definitions
-uint32_t    g_start_processing = init_processing;
-char        *g_conf_file_name = NULL;
+char                            *g_conf_file_name = NULL;
+uint32_t                        g_start_processing = init_processing;
+extern avd_server_session_t     g_srvr_session;
 
 int32_t server_init(conn_info_t *conn, int32_t type) {
 
@@ -73,19 +76,14 @@ int32_t get_user_session() {
     return 0;
 }
 
-int32_t create_user_session() {
-
-    return 0;
-}
-
-void worker_communications(server_t *srvr, int max_idx, int *nready) {
+void worker_communications(server_t *srvr, int *nready) {
 
     int32_t         i;
     int32_t         n;
     char            rbuf[MAX_BUF_SZ];
 
 #define worker srvr->poller
-    for (i = 1; i <= max_idx; i++) {
+    for (i = 1; i <= srvr->curr_poll_sz; i++) {
 #define sockfd worker[i].fd
         if (sockfd < 0) {
             continue;
@@ -105,7 +103,7 @@ void worker_communications(server_t *srvr, int max_idx, int *nready) {
                 }
             } else if (n == 0) {
                 print("Connection closed by worker\n");
-                srvr->n_users--;
+                srvr->n_clients--;
                 close_fd(sockfd);
                 return;
             } else {
@@ -124,41 +122,105 @@ void worker_communications(server_t *srvr, int max_idx, int *nready) {
 #undef worker
 }
 
-void user_communications(server_t *srvr, int max_idx, int *nready) {
+int32_t get_user_idx_from_sockfd(server_t *srvr, int32_t sockfd) {
+    int32_t     idx;
+    user_t      *user;
+    for (idx = 0; idx < srvr->n_clients; idx++) {
+        user = &srvr->users[idx];
+        if (user->conn.sockfd == sockfd) {
+            return idx;
+        }
+    }
+
+    return -1;
+}
+
+int32_t receive_message(server_t *srvr, int32_t sockfd, message_t *m, int32_t user_idx) {
+    int32_t     n = -1;
+    user_t      *user = &srvr->users[user_idx];
+
+    if (0 > (n = recv(sockfd, m, sizeof(message_t), 0))) {
+        if (errno == ECONNRESET) {
+            avd_log_warn("Connection reset by user");
+            srvr->n_clients--;
+            close_fd(user->conn.sockfd);
+            remove_user_s_session(user->id);
+            memset(user, 0, sizeof(user_t));
+            return -1;
+        } else {
+            avd_log_error("Read error occured: %s\n", strerror(errno));
+            srvr->n_clients--;
+            close_fd(user->conn.sockfd);
+            remove_user_s_session(user->id);
+            memset(user, 0, sizeof(user_t));
+            return -1;
+        }
+    } else if (n == 0) {
+        avd_log_info("Connection closed by user\n");
+        srvr->n_clients--;
+        close_fd(user->conn.sockfd);
+        remove_user_s_session(user->id);
+        memset(&srvr->users[user_idx], 0, sizeof(user_t));
+        return -1;
+    }
+    avd_log_debug("Recv %ld data", n);
+
+    return 0;
+}
+
+int32_t process_message(server_t *srvr, int32_t sockfd,
+                        const message_t *msg, int32_t user_idx) {
+    if (user_idx < 0) {
+        avd_log_debug("User with sockfd '%d' not found", sockfd);
+        return -1;
+    }
+    avd_log_info("Message received ::: [Type : %d] | [Size : %ld] | [ CNT : %s]",
+            msg->type, msg->size, msg->content.data);
+
+    switch (msg->type) {
+        case AVD_MSG_F_CTRL:
+            break;
+        case AVD_MSG_F_NEW_CON:
+            create_user_s_session(srvr, user_idx);
+            break;
+        case AVD_MSG_F_FILE:
+            break;
+        case AVD_MSG_F_RE_CON:
+            break;
+        default:
+            avd_log_error("Error");
+    }
+
+    send(sockfd, msg, sizeof(message_t), 0);
+    avd_log_debug("Sent %ld data", sizeof(message_t));
+
+    return 0;
+}
+
+void user_communications(server_t *srvr, int *nready) {
 
     int32_t         i;
-    int32_t         n;
-    message_t       rmsg;
+    int32_t         rc;
+    int32_t         user_idx;
+    message_t rmsg;
     memset(&rmsg, 0, sizeof(rmsg));
 
 #define user srvr->poller
-    for (i = 1; i <= max_idx; i++) {
+    for (i = 1; i <= srvr->curr_poll_sz; i++) {
 #define sockfd user[i].fd
         if (sockfd < 0) {
             continue;
         }
 
         if (user[i].revents & (POLLRDNORM | POLLERR)) {
-            if ((n = recv(sockfd, &rmsg, sizeof(rmsg), 0)) < 0) {
-                if (errno == ECONNRESET) {
-                    print("[ERROR][CRITICAL] ::: Connection reset by user");
-                    close_fd(sockfd);
-                    return;
-                } else {
-                    print("[ERROR][CRITICAL] ::: Read error occured: %s\n",
-                            strerror(errno));
-                    close_fd(sockfd);
+            user_idx = get_user_idx_from_sockfd(srvr, sockfd);
+            if (0 == receive_message(srvr, sockfd, &rmsg, user_idx)) {
+                if (0 > (rc = process_message(srvr, sockfd, &rmsg, user_idx))) {
+                    avd_log_error("Error while processing received message");
                     return;
                 }
-            } else if (n == 0) {
-                print("Connection closed by user\n");
-                srvr->n_users--;
-                close_fd(sockfd);
-                return;
             } else {
-                print("RECV MSG\n\tFlag : %d\n\tSize : %ld\n\tCNT : %s\n",
-                        rmsg.type, rmsg.size, rmsg.content.data);
-                send(sockfd, &rmsg, n, 0);
+                sockfd = -1;
             }
 
             *nready -= 1;
@@ -172,22 +234,20 @@ void user_communications(server_t *srvr, int max_idx, int *nready) {
 #undef user
 }
 
-int32_t connect_worker(server_t *srvr, int32_t *max_idx, int32_t *max_worker_idx) {
+int32_t connect_worker(server_t *srvr) {
 
     int32_t             i, rc = 0;
     int32_t             nready;
     int32_t             worker_fd;
-    int32_t             max_poll_sz = MAX_POLL_SZ(srvr->type);
-
 
     socklen_t           worker_addr_sz;
     struct sockaddr_in  worker_addr;
     conn_info_t         *s_conn = &srvr->conn;
-    worker_t            *worker = &srvr->workers[*max_worker_idx];
+    worker_t            *worker = &srvr->workers[srvr->new_client_id];
 
 #define worker_poll srvr->poller
 
-    nready = poll(worker_poll, (uint32_t)(*max_idx + 1), INFTIM);
+    nready = poll(worker_poll, (uint32_t)(srvr->curr_poll_sz), INFTIM);
 
     if (worker_poll[0].revents & POLLRDNORM) {
 
@@ -202,33 +262,22 @@ int32_t connect_worker(server_t *srvr, int32_t *max_idx, int32_t *max_worker_idx
             goto error;
         }
 
-        for (i = 1; i < max_poll_sz; i++) {
+        for (i = 1; i < srvr->max_poll_sz; i++) {
             if (worker_poll[i].fd < 0) {
 
                 worker_poll[i].fd = worker_fd;
                 worker_poll[i].events = POLLRDNORM;
 
-                // TODO: We need to create and store worker session
-                // in case of worker disconenection and reconnection
-                // as the task warlier ran by worker might still be running.
-                // Current idea is to store the details of the worker in a
-                // file and retrieve the previous info from the file id
-                // is available in the file. In other words save the state
-                // of the worker periodically and for FAULT TOLERENCE
-
-                //get_or_create_worker_session();
                 worker->conn.sockfd = worker_fd;
-                worker->id = (*max_worker_idx + 1);
                 worker->conn.port = sock_ntop_port((struct sockaddr *)&worker_addr);
                 snprintf(worker->conn.ip_addr_s, INET_ADDRSTRLEN, "%s",
                          sock_ntop_addr((struct sockaddr *)&worker_addr));
 
-                srvr->n_workers += 1;
-                *max_worker_idx += 1;
+                srvr->n_clients += 1;
 
                 print("New Worker connected: %s, ID: %d, (Total workers: %d)\n",
                         sock_ntop((struct sockaddr *)&worker_addr),
-                        worker->id, srvr->n_workers);
+                        worker->id, srvr->n_clients);
 
                 break;
             }
@@ -236,40 +285,38 @@ int32_t connect_worker(server_t *srvr, int32_t *max_idx, int32_t *max_worker_idx
 
 #undef worker_poll
 
-        if (i == max_poll_sz) {
+        if (i == srvr->max_poll_sz) {
             print("[ERROR][CRITICAL] ::: Too many Workers connected\n");
             goto error;
         }
 
 
-        if (i > *max_idx)
-            *max_idx = i;
+        if (i > srvr->curr_poll_sz)
+            srvr->curr_poll_sz = i;
 
     }
 
-    worker_communications(srvr, *max_idx, &nready);
+    worker_communications(srvr, &nready);
 
 error:
     return rc;
 }
 
 
-int32_t connect_user(server_t *srvr, int32_t *max_idx, int32_t *max_user_idx) {
+int32_t connect_user(server_t *srvr) {
 
-    int32_t             i, rc = 0;
+    int32_t             i, j, rc = 0;
     int32_t             nready;
     int32_t             user_fd;
-    int32_t             max_poll_sz = MAX_POLL_SZ(srvr->type);
-
-
     socklen_t           user_addr_sz;
     struct sockaddr_in  user_addr;
     conn_info_t         *s_conn = &srvr->conn;
-    user_t              *user = &srvr->users[*max_user_idx];
+    user_t              *user;
+
 
 #define user_poll srvr->poller
 
-    nready = poll(user_poll, (uint32_t)(*max_idx + 1), INFTIM);
+    nready = poll(user_poll, srvr->curr_poll_sz + 1, INFTIM);
 
     if (user_poll[0].revents & POLLRDNORM) {
 
@@ -278,71 +325,71 @@ int32_t connect_user(server_t *srvr, int32_t *max_idx, int32_t *max_user_idx) {
         user_fd = accept(s_conn->sockfd, (struct sockaddr *)&user_addr, &user_addr_sz);
         if (user_fd < 0) {
             rc = -errno;
-            print("[ERROR][CRITICAL] ::: Accept connection failed: %s\n",
-                    strerror(errno));
-            goto error;
+            avd_log_error("Accept connection failed: %s\n", strerror(errno));
+            goto bail;
         }
 
-        for (i = 1; i < max_poll_sz; i++) {
+        for (j = 0; j < MAX_USER; j++) {
+            if (srvr->users[j].id == 0) {
+                user = &srvr->users[j];
+                break;
+            }
+        }
+
+        if (j == MAX_USER) {
+            avd_log_warn("Too many Users connected\n");
+            memset(user, 0, sizeof(user_t));
+            goto bail;
+        }
+
+        for (i = 1; i < srvr->max_poll_sz; i++) {
             if (user_poll[i].fd < 0) {
 
                 user_poll[i].fd = user_fd;
                 user_poll[i].events = POLLRDNORM;
 
-                // TODO: We need to create and store user session
-                // in case of user disconenection and reconnection
-                // as the task warlier ran by user might still be running.
-                // Current idea is to store the details of the user in a
-                // file and retrieve the previous info from the file id
-                // is available in the file. In other words save the state
-                // of the user periodically and for FAULT TOLERENCE
-
-                // get_or_create_user_session();
                 user->conn.sockfd = user_fd;
-                user->id = (*max_user_idx + 1);
+                user->poll_id = i;
                 user->conn.port = sock_ntop_port((struct sockaddr *)&user_addr);
                 snprintf(user->conn.ip_addr_s, INET_ADDRSTRLEN, "%s",
                          sock_ntop_addr((struct sockaddr *)&user_addr));
 
-                srvr->n_users += 1;
-                *max_user_idx += 1;
+                srvr->n_clients += 1;
 
-                print("New User connected: %s, ID: %d, (Total users: %d)\n",
-                        sock_ntop((struct sockaddr *)&user_addr),
-                        user->id, srvr->n_users);
-
+                avd_log_info("New User connected: %s, (Total users: %d)\n",
+                        sock_ntop((struct sockaddr *)&user_addr), srvr->n_clients);
                 break;
             }
         }
 
 #undef user_poll
 
-        if (i == max_poll_sz) {
-            print("[ERROR][CRITICAL] ::: Too many Users connected\n");
-
-            goto error;
+        if (i == srvr->max_poll_sz) {
+            avd_log_warn("Too many Users connected\n");
+            memset(user, 0, sizeof(user_t));
+            goto bail;
         }
 
 
-        if (i > *max_idx)
-            *max_idx = i;
+        if (i > srvr->curr_poll_sz)
+            srvr->curr_poll_sz = i;
+
+        nready--;
 
     }
 
-    user_communications(srvr, *max_idx, &nready);
-
-error:
+    user_communications(srvr, &nready);
+bail:
     return rc;
 }
 
 static void * start_server(void * args) {
 
+    int32_t         i, rc;
     args_t          *arg = (args_t *) args;
+
     server_t        *srvr = &arg->srvr;
     uint16_t        port = arg->port;
-
-    int32_t         i, rc;
-    int32_t         max_idx, max_user_idx, max_worker_idx;
     conn_info_t     *conn = &srvr->conn;
 
     snprintf(conn->ip_addr_s, INET_ADDRSTRLEN, "%s", arg->addr);
@@ -350,8 +397,7 @@ static void * start_server(void * args) {
 
     rc = server_init(conn, srvr->type);
     if (rc < 0) {
-        print("[ERROR][CRITICAL] ::: Server init failed: %s\n",
-                strerror(errno));
+        avd_log_error("Server init failed: %s\n", strerror(errno));
         goto error;
     }
 
@@ -365,23 +411,24 @@ static void * start_server(void * args) {
                 srvr->poller[i].fd = -1;
             }
 
-            max_idx = 0;
-            max_user_idx = 0;
+            srvr->max_poll_sz = MAX_USER_POLL;
+            srvr->curr_poll_sz = 0;
+            srvr->new_client_id = 1;
 
             __sync_add_and_fetch(&g_start_processing, 1);
+
             /*
              * Ensure the main thread has started other threads
              * and now its time to go for real processing loop.
              * For this wait till main thread signals to enter the 
              * processing loop.
              */
-
             while (enter_processing != *(volatile uint32_t *)&g_start_processing) {
                 usleep(1);
             }
 
             while (true) {
-                rc = connect_user(srvr, &max_idx, &max_user_idx);
+                rc = connect_user(srvr);
             }
             break;
         case WORKER:
@@ -390,8 +437,9 @@ static void * start_server(void * args) {
                 srvr->poller[i].fd = -1;
             }
 
-            max_idx = 0;
-            max_worker_idx = 0;
+            srvr->max_poll_sz = MAX_WORKER_POLL;
+            srvr->curr_poll_sz = 0;
+            srvr->new_client_id = 1;
 
             __sync_add_and_fetch(&g_start_processing, 1);
             /*
@@ -406,7 +454,7 @@ static void * start_server(void * args) {
             }
 
             while (true) {
-                rc = connect_worker(srvr, &max_idx, &max_worker_idx);
+                rc = connect_worker(srvr);
             }
             break;
     }
@@ -418,15 +466,21 @@ error:
     return NULL;
 }
 
+void setup_logger(char *log_file, int32_t level, int32_t quiet) {
+    set_log_file(log_file);
+    set_log_level(level);
+    set_log_quiet(quiet);
+}
+
 int32_t main (int32_t argc, char const *argv[]) {
-    pthread_t   threads[2];
-    conf_parse_info_t cfg;
-    args_t      args[2];
-#define u_args  args[0]
-#define w_args  args[1]
-    server_t    srvr[2];
-#define u_srvr  srvr[0]
-#define w_srvr  srvr[1]
+    pthread_t               threads[2];
+    conf_parse_info_t       cfg;
+    args_t                  args[2];
+#define u_args              args[0]
+#define w_args              args[1]
+    server_t                srvr[2];
+#define u_srvr              srvr[0]
+#define w_srvr              srvr[1]
 
     if (argc < 2) {
         print("Usage %s <run-time>\n", basename((char *)argv[0]));
@@ -447,8 +501,11 @@ int32_t main (int32_t argc, char const *argv[]) {
         exit(EXIT_FAILURE);
     }
 
+    setup_logger(cfg.sconf.log_ufile, cfg.sconf.log_level, cfg.sconf.log_quiet);
+
     u_srvr.type = USER;
     w_srvr.type = WORKER;
+    w_srvr.max_poll_sz = MAX_WORKER_POLL;
 
     u_args.srvr = u_srvr;
     snprintf(u_args.addr,INET_ADDRSTRLEN, "%s", cfg.sconf.addr);

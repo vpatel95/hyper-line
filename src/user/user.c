@@ -1,5 +1,6 @@
 #include "avd_pipe.h"
 #include "log.h"
+#include "session.h"
 
 char    *g_conf_file_name = NULL;
 

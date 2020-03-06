@@ -3,8 +3,8 @@
         "log_user_file": "/var/log/avd_pipe_u_server.log",
         "log_worker_file": "/var/log/avd_pipe_w_server.log",
         "log_level": 0,
-        "log_quiet": "true",
-        "addr": "71.114.127.203",
+        "log_quiet": "false",
+        "addr": "192.168.1.252",
         "uport": 1195,
         "wport": 1196
     },

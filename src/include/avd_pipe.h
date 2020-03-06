@@ -68,8 +68,6 @@
     exit(1);                \
 }
 
-#define SESSION_FILE    "/opt/avd-pipe/session.json"
-
 #define USER            1
 #define WORKER          2
 #define SERVER          3
@@ -83,8 +81,7 @@
 #define MAX_WORKER_POLL MAX_WORKER + 1
 #define MAX_POLLER_SZ   max(MAX_USER_POLL,MAX_WORKER_POLL)
 
-#define MAX_POLL_SZ(type) ((type == USER) ? MAX_USER_POLL : MAX_WORKER_POLL)
-#define CLIENT_TYPE(type) ((type == USER) ? "User" : "Worker")
+#define CLIENT_TYPE(type) ((type == USER) ? "User" : "Worker") 
 
 #define MAX_BUF_SZ          2048
 #define MAX_CHUNK_SZ        256
@@ -153,16 +150,16 @@ typedef struct user_s {
 
 typedef struct server_s {
     uint8_t             type;
-    union {
-        int32_t             n_users;
-        int32_t             n_workers;
-    };
+    int32_t             n_clients;
+    int32_t             new_client_id;
+    int32_t             max_poll_sz;
+    int32_t             curr_poll_sz;
+    struct pollfd       poller[MAX_POLLER_SZ];
+    conn_info_t         conn;
     union {
         user_t          users[MAX_USER];
         worker_t        workers[MAX_WORKER];
     };
-    struct pollfd       poller[MAX_POLLER_SZ];
-    conn_info_t         conn;
 } __attribute__((packed)) server_t;
 
 typedef struct content_s {
@@ -347,6 +344,40 @@ static size_t filesize (FILE *f) {
     return l;
 }
 
+cJSON * parse_json (char *fname) {
+    FILE        *fp = fopen(fname, "r");
+    char        *buf = NULL;
+    cJSON       *json_obj = NULL;
+    size_t      len;
+
+    if (NULL == fp) {
+        avd_log_fatal("Failed to open config file");
+        goto bail;
+    }
+
+    len = filesize(fp);
+    buf = (char *)malloc(len);
+    if (!buf) {
+        avd_log_error("Failed to allocate memory while reading file");
+        goto bail;
+    }
+
+    memset(buf, 0, sizeof(len));
+    if (len != fread(buf, 1, len, fp)) {
+        avd_log_error("Failed to read all the data from the file");
+        goto bail;
+    }
+
+    json_obj = cJSON_Parse(buf);
+
+bail:
+    if (buf) { free(buf); buf = NULL; }
+    if (fp) { fclose(fp); fp = NULL; }
+
+    return json_obj;
+}
+
+
 static int32_t parse_srvr_cfg (cJSON *obj, conf_parse_info_t *cfg) {
     cJSON   *v, *tobj;
 
@@ -497,39 +528,6 @@ static int32_t parse_wrkr_cfg (cJSON *obj, conf_parse_info_t *cfg) {
     snprintf(cfg->wconf.addr, INET_ADDRSTRLEN, "%s", v->valuestring);
 
     return 0;
-}
-
-cJSON * parse_json (char *fname) {
-    FILE        *fp = fopen(fname, "r");
-    char        *buf = NULL;
-    cJSON       *json_obj = NULL;
-    size_t      len;
-
-    if (NULL == fp) {
-        avd_log_fatal("Failed to open config file");
-        goto bail;
-    }
-
-    len = filesize(fp);
-    buf = (char *)malloc(len);
-    if (!buf) {
-        avd_log_error("Failed to allocate memory while reading file");
-        goto bail;
-    }
-
-    memset(buf, 0, sizeof(len));
-    if (len != fread(buf, 1, len, fp)) {
-        avd_log_error("Failed to read all the data from the file");
-        goto bail;
-    }
-
-    json_obj = cJSON_Parse(buf);
-
-bail:
-    if (buf) { free(buf); buf = NULL; }
-    if (fp) { fclose(fp); fp = NULL; }
-
-    return json_obj;
 }
 
 int32_t process_config_file (char *fname, conf_parse_info_t *cfg) {

@@ -1,0 +1,9 @@
+image: gcc:6.5
+
+pipelines:
+  default:
+    - step:
+        script:
+          - cd src
+          - make clean
+          - make

@@ -4,7 +4,7 @@
         "log_worker_file": "/var/log/avd_pipe_w_server.log",
         "log_level": 0,
         "log_quiet": "false",
-        "addr": "192.168.1.252",
+        "addr": "192.168.1.200",
         "uport": 1195,
         "wport": 1196
     },

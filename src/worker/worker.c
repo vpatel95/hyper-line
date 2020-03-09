@@ -1,4 +1,6 @@
 #include "avd_pipe.h"
+#include "log.h"
+#include "message.h"
 
 char    *g_conf_file_name = NULL;
 
@@ -68,36 +70,6 @@ int32_t connect_server(worker_t *worker) {
     }
 
     print("Connected to server on %s\n", sock_ntop((struct sockaddr *)&srvr_addr));
-
-    message_t msg;
-    message_t rmsg;
-    memset(&msg, 0, sizeof(msg));
-    memset(&rmsg, 0, sizeof(rmsg));
-
-    set_msg_type(msg.type, AVD_MSG_F_CTRL);
-    sprintf(msg.content.data, "Hello from Worker");
-    msg.size = strlen(msg.content.data);
-
-    rc = send(conn->sockfd, &msg, sizeof(msg), 0);
-    if (rc < 0) {
-        rc = -errno;
-        print("[ERROR][CRITICAL] ::: Send error: %s\n",
-                strerror(errno));
-
-        goto error;
-    }
-
-    rc = recv(conn->sockfd, &rmsg, sizeof(msg), 0);
-    if (rc < 0) {
-        rc = -errno;
-        print("[ERROR][CRITICAL] ::: Recv error: %s\n",
-                strerror(errno));
-
-        goto error;
-    }
-
-    print("RECV MSG\n\tFlag : %d\n\tSize : %ld\n\tCNT : %s\n",
-            rmsg.type, rmsg.size, rmsg.content.data);
 
 error:
     close_fd(conn->sockfd);

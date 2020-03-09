@@ -1,6 +1,7 @@
 #include "avd_pipe.h"
 #include "log.h"
 #include "session.h"
+#include "message.h"
 
 char    *g_conf_file_name = NULL;
 
@@ -124,6 +125,7 @@ int32_t check_and_get_session(user_t *user) {
             avd_log_fatal("Failed to restore user session");
             exit(EXIT_FAILURE);
         }
+        rc = 0;
     }
 
     return rc;
@@ -132,24 +134,29 @@ int32_t check_and_get_session(user_t *user) {
 int32_t connect_server(user_t *user) {
 
     int32_t             rc = 0;
+    int32_t             smsg_sz;
     message_t msg;
-    message_t rmsg;
     conn_info_t         *conn = &user->conn;
     struct sockaddr_in  srvr_addr;
 
     conn->sockfd = user_init();
 
     memset(&msg, 0, sizeof(msg));
-    memset(&rmsg, 0, sizeof(rmsg));
 
     if (0 == (rc = check_and_get_session(user))) {
-        set_msg_type(msg.type, AVD_MSG_F_RE_CON);
+        set_msg_type(msg.hdr.type, AVD_MSG_F_RE_CON);
         avd_log_info("Restored user session");
+
+        msg_rc_t smsg;
+        smsg.uid = user->id;
+        smsg_sz = msg_rc_t_encoded_sz(&smsg);
+        msg_rc_t_encode(msg.buf, 0, smsg_sz, &smsg);
     } else {
-        set_msg_type(msg.type, AVD_MSG_F_NEW_CON);
+        set_msg_type(msg.hdr.type, AVD_MSG_F_NEW_CON);
         avd_log_info("User session not found. Creating new connection");
+        smsg_sz = 0;
     }
-    msg.size = 0;
+    msg.hdr.size = msg_sz(msg_rc_t);
 
     if (0 == (rc = inet_pton(AF_INET, conn->ip_addr_s, &srvr_addr.sin_addr.s_addr))) {
         avd_log_error("Server IP inet_pton error\n");
@@ -169,7 +176,7 @@ int32_t connect_server(user_t *user) {
 
     print("Connected to server on %s\n", sock_ntop((struct sockaddr *)&srvr_addr));
 
-    rc = send(conn->sockfd, &msg, sizeof(msg), 0);
+    rc = send(conn->sockfd, &msg, msg.hdr.size, 0);
     if (rc < 0) {
         rc = -errno;
         print("[ERROR][CRITICAL] ::: Send error: %s\n",
@@ -177,18 +184,6 @@ int32_t connect_server(user_t *user) {
 
         goto error;
     }
-
-    rc = recv(conn->sockfd, &rmsg, sizeof(msg), 0);
-    if (rc < 0) {
-        rc = -errno;
-        print("[ERROR][CRITICAL] ::: Recv error: %s\n",
-                strerror(errno));
-
-        goto error;
-    }
-
-    print("RECV MSG\n\tFlag : %d\n\tSize : %ld\n\tCNT : %s\n",
-            rmsg.type, rmsg.size, rmsg.content.data);
 
 error:
     close_fd(conn->sockfd);
@@ -225,6 +220,9 @@ int32_t main (int32_t argc, char *argv[]) {
 
     cfg.type = USER;
     g_conf_file_name = (char *)argv[1];
+
+    if (argc < 2)
+        exit(EXIT_FAILURE);
 
     if (0 != process_config_file(g_conf_file_name, &cfg)) {
         avd_log_fatal("Failed to parse config file %s\n", argv[1]);

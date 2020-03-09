@@ -37,8 +37,7 @@ void set_log_quiet(int32_t quiet) {
     avd_logger.quiet = quiet ? 1 : 0;
 }
 
-void avd_log (int32_t level, const char *fname,
-              int32_t line, const char *fmt, ...) {
+void avd_log (int32_t level, const char *fmt, ...) {
     if (level < avd_logger.level || (avd_logger.quiet && !avd_logger.fp)) {
         return;
     }
@@ -54,11 +53,7 @@ void avd_log (int32_t level, const char *fname,
 
         buf[strftime(buf, sizeof(buf), "%H:%M:%S", local_time)] = '\0';
 
-#if DISABLE_LINE_NO
-        fprintf(stderr, "[%s][%s][%s:%d] ::: ", buf, level_tags[level], fname, line);
-#else
-        fprintf(stderr, "[%s][%s][%s] ::: ", buf, level_tags[level], fname);
-#endif
+        fprintf(stderr, "[%s][%s] ::: ", buf, level_tags[level]);
 
         va_start(args, fmt);
         vfprintf(stderr, fmt, args);
@@ -73,11 +68,8 @@ void avd_log (int32_t level, const char *fname,
 
         buf[strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", local_time)] = '\0';
 
-#if DISABLE_LINE_NO
-        fprintf(avd_logger.fp, "[%s][%s][%s:%d]: ", buf, level_tags[level], fname, line);
-#else
-        fprintf(avd_logger.fp, "[%s][%s][%s]: ", buf, level_tags[level], fname);
-#endif
+        fprintf(avd_logger.fp, "[%s][%s] ::: ", buf, level_tags[level]);
+
         va_start(args, fmt);
         vfprintf(avd_logger.fp, fmt, args);
         va_end(args);

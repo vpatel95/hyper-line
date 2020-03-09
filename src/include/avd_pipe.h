@@ -162,16 +162,6 @@ typedef struct server_s {
     };
 } __attribute__((packed)) server_t;
 
-typedef struct content_s {
-    char        data[MAX_CHUNK_SZ];
-} __attribute__((packed)) content_t;
-
-typedef struct message_s {
-    int8_t      type;
-    size_t      size;
-    content_t   content;
-} __attribute__((packed)) message_t;
-
 typedef struct args_s {
     server_t    srvr;
     char        addr[INET_ADDRSTRLEN];
@@ -330,7 +320,7 @@ sigfunc * signal_intr (int32_t signo, sigfunc *func) {
 }
 
 void sig_int_handler(int32_t signo) {
-    print("\nClosing server in 1 secs\n");
+    avd_log_info("Received signal %d (SIGINT). Closing server in 1 secs", signo);
     sleep(1);
     exit(EXIT_SUCCESS);
 }

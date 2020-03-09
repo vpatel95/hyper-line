@@ -1,6 +1,7 @@
 #include "avd_pipe.h"
 #include "log.h"
 #include "session.h"
+#include "message.h"
 
 #define num_threads         2
 #define init_processing     0
@@ -135,11 +136,44 @@ int32_t get_user_idx_from_sockfd(server_t *srvr, int32_t sockfd) {
     return -1;
 }
 
-int32_t receive_message(server_t *srvr, int32_t sockfd, message_t *m, int32_t user_idx) {
+int32_t receive_header(server_t *srvr, int32_t sockfd, msg_hdr_t *h, int32_t user_idx) {
     int32_t     n = -1;
     user_t      *user = &srvr->users[user_idx];
 
-    if (0 > (n = recv(sockfd, m, sizeof(message_t), 0))) {
+    if (0 > (n = recv(sockfd, h, MSG_HDR_SZ, 0))) {
+        if (errno == ECONNRESET) {
+            avd_log_warn("Connection reset by user");
+            srvr->n_clients--;
+            close_fd(user->conn.sockfd);
+            remove_user_s_session(user->id);
+            memset(user, 0, sizeof(user_t));
+            return -1;
+        } else {
+            avd_log_error("Read error occured: %s\n", strerror(errno));
+            srvr->n_clients--;
+            close_fd(user->conn.sockfd);
+            remove_user_s_session(user->id);
+            memset(user, 0, sizeof(user_t));
+            return -1;
+        }
+    } else if (n == 0) {
+        avd_log_info("Connection closed by user\n");
+        srvr->n_clients--;
+        close_fd(user->conn.sockfd);
+        remove_user_s_session(user->id);
+        memset(&srvr->users[user_idx], 0, sizeof(user_t));
+        return -1;
+    }
+    avd_log_debug("Recv %ld data", n);
+
+    return 0;
+}
+
+int32_t receive_message(server_t *srvr, int32_t sockfd, char *buf, size_t sz, int32_t user_idx) {
+    int32_t     n = -1;
+    user_t      *user = &srvr->users[user_idx];
+
+    if (0 > (n = recv(sockfd, buf, sz, 0))) {
         if (errno == ECONNRESET) {
             avd_log_warn("Connection reset by user");
             srvr->n_clients--;
@@ -169,30 +203,41 @@ int32_t receive_message(server_t *srvr, int32_t sockfd, message_t *m, int32_t us
 }
 
 int32_t process_message(server_t *srvr, int32_t sockfd,
-                        const message_t *msg, int32_t user_idx) {
+                        message_t *msg, int32_t user_idx) {
+
+    int32_t     rc = -1;
+    size_t      sz;
     if (user_idx < 0) {
         avd_log_debug("User with sockfd '%d' not found", sockfd);
-        return -1;
+        return rc;
     }
-    avd_log_info("Message received ::: [Type : %d] | [Size : %ld] | [ CNT : %s]",
-            msg->type, msg->size, msg->content.data);
+    avd_log_info("Header received ::: [Type : %d] | [Size : %ld]",
+            msg->hdr.type, msg->hdr.size);
 
-    switch (msg->type) {
+    switch (msg->hdr.type) {
         case AVD_MSG_F_CTRL:
             break;
         case AVD_MSG_F_NEW_CON:
-            create_user_s_session(srvr, user_idx);
+            if (0 > (rc = create_user_s_session(srvr, user_idx))) {
+                return rc;
+            }
             break;
         case AVD_MSG_F_FILE:
             break;
         case AVD_MSG_F_RE_CON:
+            sz = msg->hdr.size - MSG_HDR_SZ;
+            if (0 > (rc = receive_message(srvr, sockfd, msg->buf, sz, user_idx))) {
+                return rc;
+            }
+
+            msg_rc_t m;
+            msg_rc_t_decode(msg->buf, 0, sizeof(msg->buf), &m);
+
+            avd_log_debug("RCON Msg ::: Uid : %d | Size : %ld", m.uid, sz);
             break;
         default:
             avd_log_error("Error");
     }
-
-    send(sockfd, msg, sizeof(message_t), 0);
-    avd_log_debug("Sent %ld data", sizeof(message_t));
 
     return 0;
 }
@@ -214,7 +259,7 @@ void user_communications(server_t *srvr, int *nready) {
 
         if (user[i].revents & (POLLRDNORM | POLLERR)) {
             user_idx = get_user_idx_from_sockfd(srvr, sockfd);
-            if (0 == receive_message(srvr, sockfd, &rmsg, user_idx)) {
+            if (0 == receive_header(srvr, sockfd, &rmsg.hdr, user_idx)) {
                 if (0 > (rc = process_message(srvr, sockfd, &rmsg, user_idx))) {
                     avd_log_error("Error while processing received message");
                     return;

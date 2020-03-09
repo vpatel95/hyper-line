@@ -27,10 +27,22 @@ typedef struct avd_server_session_s {
 avd_server_session_t     g_srvr_session;
 
 int32_t remove_user_s_session(int32_t user_id) {
-    int32_t     i, rc = -1;
-    int32_t     uobj_sz;
-    FILE        *fp = NULL;
+    int32_t                 i, rc = -1;
+    int32_t                 uobj_sz;
+    FILE                    *fp = NULL;
     avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
+
+    if (!sess->root) {
+        if (file_exists(SESSION_FILE, F_OK)) {
+            if (NULL == (sess->root = parse_json(SESSION_FILE))) {
+                avd_log_error("Failed parsing JSON config");
+                goto bail;
+            }
+        } else {
+            avd_log_error("Failed to locate config file");
+            goto bail;
+        }
+    }
 
     cJSON   *uobj_arr = cJSON_GetObjectItem(sess->root, "users");
     if (!uobj_arr) {
@@ -73,6 +85,53 @@ int32_t remove_user_s_session(int32_t user_id) {
     fflush(fp);
 
     rc = 0;
+bail:
+    return rc;
+}
+
+int32_t retreive_user_s_session (int32_t user_id) {
+    int32_t                 i, rc = -1;
+    int32_t                 uobj_sz;
+    avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
+
+    if (!sess->root) {
+        if (file_exists(SESSION_FILE, F_OK)) {
+            if (NULL == (sess->root = parse_json(SESSION_FILE))) {
+                avd_log_error("Failed parsing JSON config");
+                goto bail;
+            }
+        } else {
+            avd_log_error("Failed to locate config file");
+            goto bail;
+        }
+    }
+
+    cJSON   *uobj_arr = cJSON_GetObjectItem(sess->root, "users");
+    if (!uobj_arr) {
+        avd_log_debug("Failed to parse 'user' field from session file");
+        goto bail;
+    }
+
+    uobj_sz = cJSON_GetArraySize(uobj_arr);
+    for (i = 0; i < uobj_sz; i++) {
+        cJSON *uobj = cJSON_GetArrayItem(uobj_arr, i);
+        if (!uobj) {
+            avd_log_debug("Failed to retrieve user from 'users' object");
+            goto bail;
+        }
+
+        cJSON *v = cJSON_GetObjectItem(uobj, "id");
+        if ((!v) || (!v->valueint)) {
+            avd_log_debug("cannot extract 'id' from user object");
+            goto bail;
+        }
+
+        if (v->valueint == user_id) {
+            cJSON_DeleteItemFromArray(uobj_arr, i);
+            break;
+        }
+    }
+
 bail:
     return rc;
 }

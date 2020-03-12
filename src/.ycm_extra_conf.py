@@ -23,7 +23,9 @@ SOURCE_EXTENSIONS = [
 ]
 
 SOURCE_DIRECTORIES = [
-    'src',
+    'server',
+    'user',
+    'worker',
     'lib'
 ]
 

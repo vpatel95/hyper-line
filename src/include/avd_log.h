@@ -1,5 +1,5 @@
-#ifndef _LOG_H_
-#define _LOG_H_
+#ifndef _AVD_LOG_H_
+#define _AVD_LOG_H_
 
 #include <stdio.h>
 #include <stdarg.h>

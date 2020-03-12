@@ -9,6 +9,11 @@
 #include <stdlib.h>
 #include <errno.h>
 
+#include <sys/types.h>
+#include <sys/socket.h>
+
+#include "avd_log.h"
+
 #define  __INT8_NUM_BYTES__ (1)
 #define  __INT16_NUM_BYTES__ (2)
 #define  __INT32_NUM_BYTES__ (4)
@@ -23,11 +28,28 @@
 #define  __boolean_decode_little_endian_array __int8_t_decode_little_endian_array
 #define  __boolean_clone_array __int8_t_clone_array
 
+// Message type flags
+#define AVD_MSG_F_NEW_CON   (1 << 0)
+#define AVD_MSG_F_RE_CON    (1 << 1)
+#define AVD_MSG_F_FILE      (1 << 2)
+#define AVD_MSG_F_CTRL      (1 << 3)
+#define AVD_MSG_F_CLOSE     (1 << 4)
+
+#define reset_msg_type(type)        (type = 0)
+#define set_msg_type(type, flag)    (type |= flag)
+#define unset_msg_type(type, flag)  (type &= (~flag))
+#define is_msg_type(type, flag)     (type & flag)
+
 #define MSG_HDR_SZ sizeof(msg_hdr_t)
 #define msg_sz(__msg) MSG_HDR_SZ + sizeof(__msg)
 
+/* Message Header
+ *  1. Type : type of message - e.g new user, reconnect etc
+ *  2. Seq Number : this will be used in sending chunked messages e.g file transfer
+ *  3. Size : size of whole message i.e MSG_HDR_SZ + size of encoded message
+ */
 typedef struct msg_hdr_s {
-    int8_t      type;
+    int32_t      type;
     int32_t     seq_no;
     size_t      size;
 } __attribute__((packed)) msg_hdr_t;
@@ -37,10 +59,48 @@ typedef struct message_s {
     char        buf[1024];
 } __attribute__((packed)) message_t;
 
-typedef struct msg_rc_s {
+// User Message : Reconnect (rc)
+typedef struct umsg_rc_s {
     int32_t     uid;
-} msg_rc_t;
+} umsg_rc_t;
 
+// Server Message : New User Connect (nuc)
+typedef struct smsg_conn_s {
+    int32_t     uid;
+    int32_t     poll_id;
+} smsg_conn_t;
+
+int32_t recv_avd_hdr(int32_t sockfd, msg_hdr_t *h) {
+    int32_t     rc = -1;
+
+    rc = recv(sockfd, h, MSG_HDR_SZ, 0);
+
+    if (0 == rc) {
+        return rc;
+    }
+
+    if (MSG_HDR_SZ != rc) {
+        avd_log_error("Error receiving avd_hdr");
+        avd_log_debug("Error : %s", strerror(errno));
+        return -1;
+    }
+
+    avd_log_debug("Received Header of size :%d", rc);
+    return rc;
+}
+
+int32_t recv_avd_msg(int32_t sockfd, char *buf, size_t sz) {
+    int32_t     rc = -1;
+
+    if (0 >= (rc = recv(sockfd, buf, sz, 0))) {
+        avd_log_error("Error receiving avd_msg");
+        avd_log_debug("Error : %s", strerror(errno));
+        return rc;
+    }
+
+    avd_log_debug("Received Msg of size :%d", rc);
+    return rc;
+}
 
 static inline uint32_t __int8_t_encoded_array_sz(const int8_t *msg, uint32_t elements) {
     (void) msg;
@@ -698,28 +758,22 @@ static inline int32_t __string_decode_little_endian_array(const void *_buf, uint
     return pos;
 }
 
-/* Custom msg struct encode decode */
-int32_t __msg_rc_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, msg_rc_t *msg) {
-    uint32_t pos = 0;
-    int len;
-
-    len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->uid), 1);
-    if (len < 0) return len; else pos += len;
-
-    return pos;
-}
-
-uint32_t __msg_rc_t_encoded_sz(const msg_rc_t *msg) {
-    uint32_t sz = 0;
+/* User Message : Reconnect | Encoding & Decoding */
+uint32_t __umsg_rc_t_encoded_sz(const umsg_rc_t *msg) {
+    uint32_t    sz = 0;
 
     sz += __int32_t_encoded_array_sz(&(msg->uid), 1);
 
     return sz;
 }
 
-int32_t __msg_rc_t_encode(void* buf, uint32_t offset, uint32_t maxlen, const msg_rc_t* msg) {
-    uint32_t pos = 0;
-    int len;
+uint32_t umsg_rc_t_encoded_sz (const umsg_rc_t *msg) {
+    return 8 + __umsg_rc_t_encoded_sz(msg);
+}
+
+int32_t __umsg_rc_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const umsg_rc_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
 
     len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->uid), 1);
     if (len < 0) return len; else pos += len;
@@ -727,25 +781,91 @@ int32_t __msg_rc_t_encode(void* buf, uint32_t offset, uint32_t maxlen, const msg
     return pos;
 }
 
-uint32_t msg_rc_t_encoded_sz (const msg_rc_t *msg) {
-    return 8 + __msg_rc_t_encoded_sz(msg);
-}
+int32_t umsg_rc_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const umsg_rc_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
 
-int32_t msg_rc_t_encode(void* buf, uint32_t offset, uint32_t maxlen, const msg_rc_t* msg) {
-    uint32_t pos = 0;
-    int len;
-
-    len = __msg_rc_t_encode(buf, offset + pos, maxlen - pos, msg);
+    len = __umsg_rc_t_encode(buf, offset + pos, maxlen - pos, msg);
     if (len < 0) return len; else pos += len;
 
     return pos;
 }
 
-int32_t msg_rc_t_decode(const void* buf, uint32_t offset, uint32_t maxlen, msg_rc_t* msg) {
-    uint32_t pos = 0;
-    int len;
+int32_t __umsg_rc_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, umsg_rc_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
 
-    len = __msg_rc_t_decode(buf, offset + pos, maxlen - pos, msg);
+    len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->uid), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t umsg_rc_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, umsg_rc_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __umsg_rc_t_decode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+/* Server Message : New User Connect | Encoding & Decoding */
+uint32_t __smsg_conn_t_encoded_sz(const smsg_conn_t *msg) {
+    uint32_t    sz = 0;
+
+    sz += __int32_t_encoded_array_sz(&(msg->uid), 1);
+    sz += __int32_t_encoded_array_sz(&(msg->poll_id), 1);
+
+    return sz;
+}
+
+uint32_t smsg_conn_t_encoded_sz (const smsg_conn_t *msg) {
+    return 8 + __smsg_conn_t_encoded_sz(msg);
+}
+
+int32_t __smsg_conn_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const smsg_conn_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->uid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->poll_id), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t smsg_conn_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const smsg_conn_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __smsg_conn_t_encode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t __smsg_conn_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, smsg_conn_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->uid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->poll_id), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t smsg_conn_t_decode(const void* buf, uint32_t offset, uint32_t maxlen, smsg_conn_t* msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __smsg_conn_t_decode(buf, offset + pos, maxlen - pos, msg);
     if (len < 0) return len; else pos += len;
 
     return pos;

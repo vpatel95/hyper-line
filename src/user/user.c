@@ -1,9 +1,10 @@
 #include "avd_pipe.h"
-#include "log.h"
-#include "session.h"
-#include "message.h"
+#include "avd_log.h"
+#include "avd_session.h"
+#include "avd_message.h"
 
-char    *g_conf_file_name = NULL;
+char                        *g_conf_file_name = NULL;
+extern avd_user_session_t   g_user_session;
 
 int32_t user_init () {
     int32_t     conn_fd;
@@ -18,110 +19,27 @@ int32_t user_init () {
     return conn_fd;
 }
 
-/* TODO: Add Multiplexing I/O in server communication
+/* TODO: Add Multiplexing I/O in server communication */
+void server_communication (conn_info_t *conn) {
+    message_t   rmsg;
 
-void server_communication (conn_into_t *conn) {
-    int32_t     maxfd;
-    fdset       rset, wset;
+    memset(&rmsg, 0, sizeof(rmsg));
 
-    FD_ZERO(&rset);
-    FD_ZERO(&wset);
+#define sockfd conn->sockfd
+    if (sockfd < 0)
+        return;
 
-error:
-    close_fd(conn->sockfd);
-    return;
-}
-*/
-
-int32_t get_user_session (user_t *user) {
-    int32_t     i, j;
-    cJSON       *obj = NULL;
-    cJSON       *v = NULL;
-    cJSON       *tobj = NULL;
-    cJSON       *sobj = NULL;
-    int32_t     rc = -1;
-
-    if (NULL == (obj = parse_json(SESSION_FILE))) {
-        avd_log_error("Failed to parse %s file", SESSION_FILE);
-        goto bail;
+    while(true) {
+        usleep(1000);
     }
 
-    v = cJSON_GetObjectItem(obj, "id");
-    if ((!v) || (!v->valueint)) {
-        avd_log_error("Failed to find 'id' in session file");
-        goto bail;
-    }
-    user->id = v->valueint;
-
-    v = cJSON_GetObjectItem(obj, "poll_id");
-    if ((!v) || (!v->valueint)) {
-        avd_log_error("Failed to find 'poll_id' in session file");
-        goto bail;
-    }
-    user->poll_id = v->valueint;
-
-    tobj = cJSON_GetObjectItem(obj, "tasks");
-    if (!tobj) {
-        goto bail;
-    }
-
-    for (i = 0; i < cJSON_GetArraySize(tobj); i++) {
-#define task user->tasks[i]
-        cJSON *t = cJSON_GetArrayItem(tobj, i);
-
-        v = cJSON_GetObjectItem(t, "id");
-        if ((!v) || (!v->valueint)) {
-            avd_log_error("Failed to find 'id' in 'tasks' object in session file");
-            goto bail;
-        }
-        task.id = v->valueint;
-
-        v = cJSON_GetObjectItem(t, "num_stages");
-        if ((!v) || (!v->valueint)) {
-            avd_log_error("Failed to find 'num_stages' in 'tasks' object in session file");
-            goto bail;
-        }
-        task.num_stages = v->valueint;
-
-        sobj = cJSON_GetObjectItem(t, "stages");
-        if (!sobj) {
-            goto bail;
-        }
-
-        for (j = 0; j < cJSON_GetArraySize(sobj); j++) {
-#define stage task.stages[j]
-#define wrkr stage.worker
-            cJSON *s = cJSON_GetArrayItem(sobj, j);
-
-            v = cJSON_GetObjectItem(s, "id");
-            if ((!v) || (!v->valueint)) {
-                avd_log_error("Failed to find 'id' in 'stages' object in session file");
-                goto bail;
-            }
-            stage.id = v->valueint;
-
-            v = cJSON_GetObjectItem(s, "w_id");
-            if ((!v) || (!v->valueint)) {
-                avd_log_error("Failed to find 'w_id' in 'stages' object in session file");
-                goto bail;
-            }
-            wrkr.id = v->valueint;
-#undef wrkr
-#undef stage
-        }
-#undef task
-    }
-
-    rc = 0;
-
-bail:
-    return rc;
+#undef sockfd
 }
 
 int32_t check_and_get_session(user_t *user) {
     int32_t     rc = -1;
     if (file_exists(SESSION_FILE, F_OK)) {
-        if (0 != (rc = get_user_session(user))) {
+        if (0 != (rc = retrieve_user_u_session(user))) {
             avd_log_fatal("Failed to restore user session");
             exit(EXIT_FAILURE);
         }
@@ -131,38 +49,118 @@ int32_t check_and_get_session(user_t *user) {
     return rc;
 }
 
+int32_t reconnect(user_t *user) {
+    int32_t         rc = -1;
+    int32_t         umsg_sz;
+    int32_t         sz;
+    message_t       msg;
+    message_t       rmsg;
+    conn_info_t     *conn = &user->conn;
+
+    memset(&msg, 0, sizeof(msg));
+    memset(&rmsg, 0, sizeof(rmsg));
+
+    set_msg_type(msg.hdr.type, AVD_MSG_F_RE_CON);
+    avd_log_info("Restored user session");
+
+    umsg_rc_t umsg;
+    umsg.uid = user->id;
+    umsg_sz = umsg_rc_t_encoded_sz(&umsg);
+    umsg_rc_t_encode(msg.buf, 0, umsg_sz, &umsg);
+    msg.hdr.size = msg_sz(umsg_rc_t);
+
+    rc = send(conn->sockfd, &msg, msg.hdr.size, 0);
+    if (rc < 0) {
+        avd_log_error("Send error: %s\n", strerror(errno));
+        goto bail;
+    }
+
+    if (0 < recv_avd_hdr(conn->sockfd, &rmsg.hdr)) {
+        if (is_msg_type(rmsg.hdr.type, AVD_MSG_F_RE_CON)) {
+            if (0 < (sz = (rmsg.hdr.size - MSG_HDR_SZ))) {
+                rc = recv_avd_msg(conn->sockfd, rmsg.buf, sz);
+            }
+        } else {
+            avd_log_error("Expecting message type %d, received %d",
+                           AVD_MSG_F_RE_CON, rmsg.hdr.type);
+            goto bail;
+        }
+    }
+
+    smsg_conn_t m;
+    smsg_conn_t_decode(rmsg.buf, 0, sizeof(rmsg.buf), &m);
+
+    user->id = m.uid;
+    user->poll_id = m.poll_id;
+
+    update_user_u_session("id", cJSON_CreateNumber(user->id));
+    update_user_u_session("poll_id", cJSON_CreateNumber(user->poll_id));
+
+    return 0;
+
+bail:
+    close_fd(conn->sockfd);
+    return rc;
+}
+
+int32_t new_connection(user_t *user) {
+    int32_t     rc = -1;
+    int32_t     sz;
+    message_t   msg;
+    message_t   rmsg;
+    conn_info_t     *conn = &user->conn;
+
+    memset(&msg, 0, sizeof(msg));
+    memset(&rmsg, 0, sizeof(rmsg));
+
+    set_msg_type(msg.hdr.type, AVD_MSG_F_NEW_CON);
+    avd_log_info("User session not found. Creating new connection");
+    msg.hdr.size = MSG_HDR_SZ;
+
+    rc = send(conn->sockfd, &msg, msg.hdr.size, 0);
+    if (rc < 0) {
+        avd_log_error("Send error: %s\n", strerror(errno));
+        goto bail;
+    }
+
+    if (0 < recv_avd_hdr(conn->sockfd, &rmsg.hdr)) {
+        if (is_msg_type(rmsg.hdr.type, AVD_MSG_F_NEW_CON)) {
+            if (0 < (sz = (rmsg.hdr.size - MSG_HDR_SZ))) {
+                rc = recv_avd_msg(conn->sockfd, rmsg.buf, sz);
+            }
+        } else {
+            avd_log_error("Expecting message type %d, received %d",
+                           AVD_MSG_F_NEW_CON, rmsg.hdr.type);
+            goto bail;
+        }
+    }
+
+    smsg_conn_t m;
+    smsg_conn_t_decode(rmsg.buf, 0, sizeof(rmsg.buf), &m);
+
+    user->id = m.uid;
+    user->poll_id = m.poll_id;
+
+    create_user_u_session(user);
+
+    return 0;
+bail:
+    close_fd(conn->sockfd);
+    return rc;
+}
+
 int32_t connect_server(user_t *user) {
 
-    int32_t             rc = 0;
-    int32_t             smsg_sz;
-    message_t msg;
+    int32_t             rc = -1;
     conn_info_t         *conn = &user->conn;
     struct sockaddr_in  srvr_addr;
 
     conn->sockfd = user_init();
 
-    memset(&msg, 0, sizeof(msg));
-
-    if (0 == (rc = check_and_get_session(user))) {
-        set_msg_type(msg.hdr.type, AVD_MSG_F_RE_CON);
-        avd_log_info("Restored user session");
-
-        msg_rc_t smsg;
-        smsg.uid = user->id;
-        smsg_sz = msg_rc_t_encoded_sz(&smsg);
-        msg_rc_t_encode(msg.buf, 0, smsg_sz, &smsg);
-    } else {
-        set_msg_type(msg.hdr.type, AVD_MSG_F_NEW_CON);
-        avd_log_info("User session not found. Creating new connection");
-        smsg_sz = 0;
-    }
-    msg.hdr.size = msg_sz(msg_rc_t);
-
     if (0 == (rc = inet_pton(AF_INET, conn->ip_addr_s, &srvr_addr.sin_addr.s_addr))) {
         avd_log_error("Server IP inet_pton error\n");
-        goto error;
+        goto bail;
     }
-
     srvr_addr.sin_family = AF_INET;
     srvr_addr.sin_port = htons(conn->port);
 
@@ -171,33 +169,39 @@ int32_t connect_server(user_t *user) {
     if (rc < 0) {
         avd_log_fatal("Error connecting to the server at \"%s:%d\" : %s\n",
                 conn->ip_addr_s, conn->port, strerror(errno));
-        goto error;
+        goto bail;
     }
 
     print("Connected to server on %s\n", sock_ntop((struct sockaddr *)&srvr_addr));
 
-    rc = send(conn->sockfd, &msg, msg.hdr.size, 0);
-    if (rc < 0) {
-        rc = -errno;
-        print("[ERROR][CRITICAL] ::: Send error: %s\n",
-                strerror(errno));
 
-        goto error;
+    if (0 != (rc = check_and_get_session(user))) {
+        new_connection(user);
+    } else {
+        reconnect(user);
     }
 
-error:
+    return 0;
+
+bail:
     close_fd(conn->sockfd);
     return rc;
 }
 
 int32_t start_user (user_t *user) {
-    int32_t         rc;
+    int32_t         rc = -1;
+    conn_info_t     *conn = &user->conn;
 
     rc = connect_server(user);
     if (rc < 0) {
         avd_log_error("Cannot establish connection with server: %s\n.", strerror(errno));
+        goto bail;
     }
 
+    while(true) {
+        server_communication(conn);
+    }
+bail:
     return rc;
 }
 

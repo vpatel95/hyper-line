@@ -1,7 +1,7 @@
 #include "avd_pipe.h"
-#include "log.h"
-#include "session.h"
-#include "message.h"
+#include "avd_log.h"
+#include "avd_session.h"
+#include "avd_message.h"
 
 #define num_threads         2
 #define init_processing     0
@@ -22,7 +22,7 @@ int32_t server_init(conn_info_t *conn, int32_t type) {
 
     if (conn->sockfd < 0) {
         rc = -errno;
-        print("[ERROR][CRITICAL] ::: %s Server socket setup failed: %s\n",
+        avd_log_error("%s Server socket setup failed: %s\n",
                 CLIENT_TYPE(type), strerror(-rc));
 
         return rc;
@@ -30,17 +30,16 @@ int32_t server_init(conn_info_t *conn, int32_t type) {
 
     rc = inet_pton(AF_INET, conn->ip_addr_s, &srvr_addr.sin_addr.s_addr);
     if (rc == 0) {
-        print("[ERROR][CRITICAL] ::: %s Server IP invalid format: %s\n",
+        avd_log_error("%s Server IP invalid format: %s\n",
                 CLIENT_TYPE(type), strerror(errno));
-
-        goto error;
+        goto bail;
     }
 
     if (rc < 0) {
-        print("[ERROR]{CRITICAL] ::: %s Server IP inet_pton error: %s\n",
+        avd_log_error("%s Server IP inet_pton error: %s\n",
                 CLIENT_TYPE(type), strerror(errno));
 
-        goto error;
+        goto bail;
     }
 
     srvr_addr.sin_family = AF_INET;
@@ -48,40 +47,73 @@ int32_t server_init(conn_info_t *conn, int32_t type) {
 
     rc = bind(conn->sockfd, (struct sockaddr*)&srvr_addr, sizeof(srvr_addr));
     if (rc < 0) {
-        print("[ERROR][CRITICAL] ::: %s Server socket bind error: %s\n",
+        avd_log_error("%s Server socket bind error: %s\n",
                 CLIENT_TYPE(type), strerror(errno));
 
-        goto error;
+        goto bail;
     }
 
     rc = listen(conn->sockfd, 3);
     if (rc < 0) {
-        print("[ERROR][CRITICAL] ::: %s Server socket listen failed: %s\n",
+        avd_log_error("%s Server socket listen failed: %s\n",
                 CLIENT_TYPE(type), strerror(errno));
 
-        goto error;
+        goto bail;
     }
 
-    print("%s Server listening on %s:%d\n", CLIENT_TYPE(type),
-            conn->ip_addr_s, conn->port);
+    avd_log_info("%s Server listening on %s:%d\n", CLIENT_TYPE(type),
+                  conn->ip_addr_s, conn->port);
 
     return 0;
 
-error:
+bail:
     close(conn->sockfd);
     return rc;
 }
 
-int32_t get_user_session() {
+int32_t get_worker_idx_from_sockfd(server_t *srvr, int32_t sockfd) {
+    int32_t     idx;
+    worker_t    *worker;
+    for (idx = 0; idx < srvr->n_clients; idx++) {
+        worker = &srvr->workers[idx];
+        if (worker->conn.sockfd == sockfd) {
+            return idx;
+        }
+    }
 
+    return -1;
+}
+
+void close_worker_connection(server_t *srvr, int32_t worker_idx) {
+    worker_t  *worker = &srvr->workers[worker_idx];
+
+    avd_log_info("Worker connection closed. Worker id : %d", worker->id);
+
+    srvr->n_clients--;
+    close(worker->conn.sockfd);
+    srvr->poller[worker->poll_id].fd = -1;
+    remove_user_s_session(worker->id);
+    memset(worker, 0, sizeof(worker_t));
+}
+
+// TODO:
+int32_t process_worker_message(server_t *srvr, int32_t sockfd,
+                        message_t *msg, int32_t worker_idx) {
+    (void) (msg);
+    (void) (worker_idx);
+    (void) (srvr);
+    (void) (sockfd);
     return 0;
 }
 
 void worker_communications(server_t *srvr, int *nready) {
 
     int32_t         i;
-    int32_t         n;
-    char            rbuf[MAX_BUF_SZ];
+    int32_t         rc;
+    int32_t         worker_idx;
+    message_t       rmsg;
+
+    memset(&rmsg, 0, sizeof(rmsg));
 
 #define worker srvr->poller
     for (i = 1; i <= srvr->curr_poll_sz; i++) {
@@ -91,25 +123,13 @@ void worker_communications(server_t *srvr, int *nready) {
         }
 
         if (worker[i].revents & (POLLRDNORM | POLLERR)) {
-            if ((n = recv(sockfd, rbuf, MAX_BUF_SZ, 0)) < 0) {
-                if (errno == ECONNRESET) {
-                    print("[ERROR][CRITICAL] ::: Connection reset by worker");
-                    close_fd(sockfd);
-                    return;
-                } else {
-                    print("[ERROR][CRITICAL] ::: Read error occured: %s\n",
-                            strerror(errno));
-                    close_fd(sockfd);
-                    return;
+            worker_idx = get_worker_idx_from_sockfd(srvr, sockfd);
+            if (0 < recv_avd_hdr(sockfd, &rmsg.hdr)) {
+                if (0 > (rc = process_worker_message(srvr, sockfd, &rmsg, worker_idx))) {
+                    close_worker_connection(srvr, worker_idx);
                 }
-            } else if (n == 0) {
-                print("Connection closed by worker\n");
-                srvr->n_clients--;
-                close_fd(sockfd);
-                return;
             } else {
-                print("RECV: %s\n", rbuf);
-                send(sockfd, rbuf, n, 0);
+                close_worker_connection(srvr, worker_idx);
             }
 
             *nready -= 1;
@@ -126,7 +146,7 @@ void worker_communications(server_t *srvr, int *nready) {
 int32_t get_user_idx_from_sockfd(server_t *srvr, int32_t sockfd) {
     int32_t     idx;
     user_t      *user;
-    for (idx = 0; idx < srvr->n_clients; idx++) {
+    for (idx = 0; idx < MAX_USER; idx++) {
         user = &srvr->users[idx];
         if (user->conn.sockfd == sockfd) {
             return idx;
@@ -136,104 +156,116 @@ int32_t get_user_idx_from_sockfd(server_t *srvr, int32_t sockfd) {
     return -1;
 }
 
-int32_t receive_header(server_t *srvr, int32_t sockfd, msg_hdr_t *h, int32_t user_idx) {
-    int32_t     n = -1;
-    user_t      *user = &srvr->users[user_idx];
+void close_user_connection(server_t *srvr, int32_t sockfd,
+                           int32_t poll_id, int32_t user_idx) {
 
-    if (0 > (n = recv(sockfd, h, MSG_HDR_SZ, 0))) {
-        if (errno == ECONNRESET) {
-            avd_log_warn("Connection reset by user");
-            srvr->n_clients--;
-            close_fd(user->conn.sockfd);
-            remove_user_s_session(user->id);
-            memset(user, 0, sizeof(user_t));
-            return -1;
-        } else {
-            avd_log_error("Read error occured: %s\n", strerror(errno));
-            srvr->n_clients--;
-            close_fd(user->conn.sockfd);
-            remove_user_s_session(user->id);
-            memset(user, 0, sizeof(user_t));
-            return -1;
-        }
-    } else if (n == 0) {
-        avd_log_info("Connection closed by user\n");
-        srvr->n_clients--;
-        close_fd(user->conn.sockfd);
-        remove_user_s_session(user->id);
-        memset(&srvr->users[user_idx], 0, sizeof(user_t));
-        return -1;
+    srvr->n_clients--;
+    close(sockfd);
+    srvr->poller[poll_id].fd = -1;
+
+    if (user_idx < 0) {
+        avd_log_info("Cleared stale\n\tsockfd : %d\n\tpoll_id : %d", sockfd, poll_id);
+        return;
     }
-    avd_log_debug("Recv %ld data", n);
 
-    return 0;
+    user_t *user = &srvr->users[user_idx];
+
+    avd_log_info("User connection closed. User id : %d", user->id);
+    avd_log_fatal("sockfd : %d, ", user->conn.sockfd);
+    avd_log_fatal("poll_id : %d", user->poll_id);
+
+    memset(user, 0, sizeof(user_t));
+
 }
 
-int32_t receive_message(server_t *srvr, int32_t sockfd, char *buf, size_t sz, int32_t user_idx) {
-    int32_t     n = -1;
-    user_t      *user = &srvr->users[user_idx];
-
-    if (0 > (n = recv(sockfd, buf, sz, 0))) {
-        if (errno == ECONNRESET) {
-            avd_log_warn("Connection reset by user");
-            srvr->n_clients--;
-            close_fd(user->conn.sockfd);
-            remove_user_s_session(user->id);
-            memset(user, 0, sizeof(user_t));
-            return -1;
-        } else {
-            avd_log_error("Read error occured: %s\n", strerror(errno));
-            srvr->n_clients--;
-            close_fd(user->conn.sockfd);
-            remove_user_s_session(user->id);
-            memset(user, 0, sizeof(user_t));
-            return -1;
-        }
-    } else if (n == 0) {
-        avd_log_info("Connection closed by user\n");
-        srvr->n_clients--;
-        close_fd(user->conn.sockfd);
-        remove_user_s_session(user->id);
-        memset(&srvr->users[user_idx], 0, sizeof(user_t));
-        return -1;
-    }
-    avd_log_debug("Recv %ld data", n);
-
-    return 0;
-}
-
-int32_t process_message(server_t *srvr, int32_t sockfd,
+int32_t process_user_message(server_t *srvr, int32_t sockfd,
                         message_t *msg, int32_t user_idx) {
 
     int32_t     rc = -1;
     size_t      sz;
-    if (user_idx < 0) {
-        avd_log_debug("User with sockfd '%d' not found", sockfd);
-        return rc;
-    }
-    avd_log_info("Header received ::: [Type : %d] | [Size : %ld]",
+    size_t      smsg_sz;
+    message_t   res;
+    user_t      *user = &srvr->users[user_idx];
+
+    memset(&res, 0, sizeof(res));
+
+    avd_log_debug("Header received ::: [Type : %d] | [Size : %ld]",
             msg->hdr.type, msg->hdr.size);
 
     switch (msg->hdr.type) {
         case AVD_MSG_F_CTRL:
             break;
         case AVD_MSG_F_NEW_CON:
+            if (0 < (sz = msg->hdr.size - MSG_HDR_SZ)) {
+                rc = recv_avd_msg(sockfd, msg->buf, sz);
+            }
+
             if (0 > (rc = create_user_s_session(srvr, user_idx))) {
                 return rc;
             }
+
+            set_msg_type(res.hdr.type, AVD_MSG_F_NEW_CON);
+            res.hdr.seq_no = 1;
+
+            smsg_conn_t nc_smsg;
+            nc_smsg.uid = user->id;
+            nc_smsg.poll_id = user->poll_id;
+
+            smsg_sz = smsg_conn_t_encoded_sz(&nc_smsg);
+            smsg_conn_t_encode(res.buf, 0, smsg_sz, &nc_smsg);
+            res.hdr.size = msg_sz(smsg_conn_t);
+
+            rc = send(sockfd, &res, res.hdr.size, 0);
+            if (rc < 0) {
+                rc = -errno;
+                avd_log_error("Send error: %s\n", strerror(errno));
+                return rc;;
+            }
+
             break;
         case AVD_MSG_F_FILE:
             break;
         case AVD_MSG_F_RE_CON:
             sz = msg->hdr.size - MSG_HDR_SZ;
-            if (0 > (rc = receive_message(srvr, sockfd, msg->buf, sz, user_idx))) {
+            if (0 > (rc = recv_avd_msg(sockfd, msg->buf, sz))) {
                 return rc;
             }
 
-            msg_rc_t m;
-            msg_rc_t_decode(msg->buf, 0, sizeof(msg->buf), &m);
+            umsg_rc_t m;
+            umsg_rc_t_decode(msg->buf, 0, sizeof(msg->buf), &m);
 
             avd_log_debug("RCON Msg ::: Uid : %d | Size : %ld", m.uid, sz);
+
+            if (!user_s_session_exists(m.uid)) {
+                avd_log_error("Failed to find user session with reconnect id %d", m.uid);
+                return -1;
+            }
+
+            user->id = m.uid;
+            update_user_s_session(m.uid, "poll_id", cJSON_CreateNumber(user->poll_id));
+
+            set_msg_type(res.hdr.type, AVD_MSG_F_RE_CON);
+            res.hdr.seq_no = 1;
+
+            smsg_conn_t rc_smsg;
+            rc_smsg.uid = user->id;
+            rc_smsg.poll_id = user->poll_id;
+
+            smsg_sz = smsg_conn_t_encoded_sz(&rc_smsg);
+            smsg_conn_t_encode(res.buf, 0, smsg_sz, &rc_smsg);
+            res.hdr.size = msg_sz(smsg_conn_t);
+
+            rc = send(sockfd, &res, res.hdr.size, 0);
+            if (rc < 0) {
+                rc = -errno;
+                avd_log_error("Send error: %s\n", strerror(errno));
+                return rc;;
+            }
+
+            break;
+        case AVD_MSG_F_CLOSE:
+            remove_user_s_session(user->id);
+            close_user_connection(srvr, sockfd, user->poll_id, user_idx);
             break;
         default:
             avd_log_error("Error");
@@ -247,25 +279,29 @@ void user_communications(server_t *srvr, int *nready) {
     int32_t         i;
     int32_t         rc;
     int32_t         user_idx;
-    message_t rmsg;
+    message_t       rmsg;
+
     memset(&rmsg, 0, sizeof(rmsg));
 
-#define user srvr->poller
+#define user_poll srvr->poller
     for (i = 1; i <= srvr->curr_poll_sz; i++) {
-#define sockfd user[i].fd
+#define sockfd user_poll[i].fd
         if (sockfd < 0) {
             continue;
         }
 
-        if (user[i].revents & (POLLRDNORM | POLLERR)) {
-            user_idx = get_user_idx_from_sockfd(srvr, sockfd);
-            if (0 == receive_header(srvr, sockfd, &rmsg.hdr, user_idx)) {
-                if (0 > (rc = process_message(srvr, sockfd, &rmsg, user_idx))) {
-                    avd_log_error("Error while processing received message");
-                    return;
+        if (user_poll[i].revents & (POLLRDNORM | POLLERR)) {
+            if (0 > (user_idx = get_user_idx_from_sockfd(srvr, sockfd))) {
+                close_user_connection(srvr, sockfd, i, user_idx);
+                continue;
+            }
+
+            if (0 < recv_avd_hdr(sockfd, &rmsg.hdr)) {
+                if (0 > (rc = process_user_message(srvr, sockfd, &rmsg, user_idx))) {
+                    close_user_connection(srvr, sockfd, i, user_idx);
                 }
             } else {
-                sockfd = -1;
+                close_user_connection(srvr, sockfd, i, user_idx);
             }
 
             *nready -= 1;
@@ -276,7 +312,7 @@ void user_communications(server_t *srvr, int *nready) {
         }
 #undef sockfd
     }
-#undef user
+#undef user_poll
 }
 
 int32_t connect_worker(server_t *srvr) {
@@ -401,8 +437,8 @@ int32_t connect_user(server_t *srvr) {
 
                 srvr->n_clients += 1;
 
-                avd_log_info("New User connected: %s, (Total users: %d)\n",
-                        sock_ntop((struct sockaddr *)&user_addr), srvr->n_clients);
+                avd_log_info("New User connected: %s", sock_ntop((struct sockaddr *)&user_addr));
+                avd_log_fatal("\tUser Info:\n\t\tsockfd : %d\n\t\tpoll_id : %d", user->conn.sockfd, user->poll_id);
                 break;
             }
         }

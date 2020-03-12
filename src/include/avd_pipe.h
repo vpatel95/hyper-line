@@ -24,7 +24,7 @@
 #include <pthread.h>
 
 #include "cJSON.h"
-#include "log.h"
+#include "avd_log.h"
 
 #ifndef INFTIM
 #define INFTIM      (-1)
@@ -87,17 +87,6 @@
 #define MAX_CHUNK_SZ        256
 #define MAX_FILE_NAME_SZ    50
 
-// Message type flags
-#define AVD_MSG_F_NEW_CON   (1 << 0)
-#define AVD_MSG_F_RE_CON    (1 << 1)
-#define AVD_MSG_F_FILE      (1 << 2)
-#define AVD_MSG_F_CTRL      (1 << 3)
-
-#define reset_msg_type(type)        (type = 0)
-#define set_msg_type(type, flag)    (type |= flag)
-#define unset_msg_type(type, flag)  (type &= (~flag))
-#define is_msg_type(type, flag)     (type & flag)
-
 typedef void (sigfunc)(int);
 
 typedef struct conn_info_s {
@@ -123,6 +112,7 @@ typedef struct peer_s {
 
 typedef struct worker_s {
     int32_t         id;
+    int32_t         poll_id;
     peer_t          peers[2];
     conn_info_t     conn;
 } __attribute__((packed)) worker_t;

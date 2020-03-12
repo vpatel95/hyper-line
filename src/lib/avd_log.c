@@ -4,7 +4,7 @@
 #include <string.h>
 #include <time.h>
 
-#include "log.h"
+#include "avd_log.h"
 
 static struct {
     FILE        *fp;

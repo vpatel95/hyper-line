@@ -11,6 +11,9 @@
 // Global variable definitions
 char                            *g_conf_file_name = NULL;
 uint32_t                        g_start_processing = init_processing;
+int32_t                         g_seq_in = 1;
+int32_t                         g_seq_out = 1;
+int32_t                         g_seq_tsk = 1;
 extern avd_server_session_t     g_srvr_session;
 
 int32_t server_init(conn_info_t *conn, int32_t type) {
@@ -181,9 +184,10 @@ void close_user_connection(server_t *srvr, int32_t sockfd,
 int32_t process_user_message(server_t *srvr, int32_t sockfd,
                         message_t *msg, int32_t user_idx) {
 
-    int32_t     rc = -1;
+    int32_t     i, j, rc = -1;
     size_t      sz;
     size_t      smsg_sz;
+    FILE        *fp;
     message_t   res;
     user_t      *user = &srvr->users[user_idx];
 
@@ -193,11 +197,12 @@ int32_t process_user_message(server_t *srvr, int32_t sockfd,
             msg->hdr.type, msg->hdr.size);
 
     switch (msg->hdr.type) {
-        case AVD_MSG_F_CTRL:
-            break;
         case AVD_MSG_F_NEW_CON:
             if (0 < (sz = msg->hdr.size - MSG_HDR_SZ)) {
                 rc = recv_avd_msg(sockfd, msg->buf, sz);
+                if (0 > rc) {
+                    return rc;
+                }
             }
 
             if (0 > (rc = create_user_s_session(srvr, user_idx))) {
@@ -223,12 +228,12 @@ int32_t process_user_message(server_t *srvr, int32_t sockfd,
             }
 
             break;
-        case AVD_MSG_F_FILE:
-            break;
         case AVD_MSG_F_RE_CON:
-            sz = msg->hdr.size - MSG_HDR_SZ;
-            if (0 > (rc = recv_avd_msg(sockfd, msg->buf, sz))) {
-                return rc;
+            if (0 < (sz = msg->hdr.size - MSG_HDR_SZ)) {
+                rc = recv_avd_msg(sockfd, msg->buf, sz);
+                if (0 > rc) {
+                    return rc;
+                }
             }
 
             umsg_rc_t m;
@@ -259,13 +264,153 @@ int32_t process_user_message(server_t *srvr, int32_t sockfd,
             if (rc < 0) {
                 rc = -errno;
                 avd_log_error("Send error: %s\n", strerror(errno));
-                return rc;;
+                return rc;
             }
+
+            break;
+        case AVD_MSG_F_TASK:
+            if (0 < (sz = msg->hdr.size - MSG_HDR_SZ)) {
+                rc = recv_avd_msg(sockfd, msg->buf, sz);
+                if (0 > rc) {
+                    return rc;
+                }
+            }
+
+            tmsg_args_t tmsg;
+            tmsg_args_t_decode(msg->buf, 0, sizeof(msg->buf), &tmsg);
+
+            for (i = 0; i < MAX_TASK; i++) {
+                if (user->tasks[i].id == 0) {
+                    break;
+                }
+            }
+
+            if (i == MAX_TASK) {
+                avd_log_error("Task limit reached! Task not added!");
+                return -1;
+            }
+
+            user->tasks[i].id = user->num_tasks + 1;
+            user->num_tasks += 1;
+
+#define task user->tasks[i]
+            snprintf(task.name, MAX_TASK_NAME_SZ, "%s", tmsg.task_name);
+            task.num_stages = tmsg.num_stages;
+
+            for (j = 0; j < task.num_stages; j++) {
+                task.stages[j].num = tmsg.stages[j].num;
+                snprintf(task.stages[j].func_name, MAX_STAGE_FUNC_NAME_SZ,
+                         "%s", tmsg.stages[j].func);
+            }
+#undef task
+            break;
+        case AVD_MSG_F_FILE_TSK:
+        case AVD_MSG_F_FILE_TSK_FIN:
+            if (user->file_seq_no != msg->hdr.seq_no) {
+                avd_log_error("Out of order message. Expecting seq %d, Received %d",
+                        user->file_seq_no, msg->hdr.seq_no);
+                return -1;
+            }
+
+            if (0 < (sz = msg->hdr.size - MSG_HDR_SZ)) {
+                rc = recv_avd_msg(sockfd, msg->buf, sz);
+                if (0 > rc) {
+                    return rc;
+                }
+            }
+
+            fp = fopen(TASK_FILE, "ab+");
+
+            if (user->file_seq_no == 1) {
+                fseek(fp, 0L, SEEK_SET);
+            }
+
+            fwrite(msg->buf, rc, 1, fp);
+
+            if (is_msg_type(msg->hdr.type, AVD_MSG_F_FILE_TSK_FIN)) {
+                if(chmod(TASK_FILE, S_IRUSR | S_IWUSR | S_IXUSR
+                         | S_IXGRP | S_IRGRP | S_IWGRP | S_IXOTH
+                         | S_IROTH | S_IWOTH) != 0) {
+                    avd_log_error("Error changing file mode to executable for file %s", TASK_FILE);
+                    return -1;
+                }
+                user->file_seq_no = 1;
+            } else {
+                user->file_seq_no += 1;
+            }
+
+            fclose(fp);
+
+            break;
+        case AVD_MSG_F_FILE_IN:
+        case AVD_MSG_F_FILE_IN_FIN:
+            if (user->file_seq_no != msg->hdr.seq_no) {
+                avd_log_error("Out of order message. Expecting seq %d, Received %d",
+                        user->file_seq_no, msg->hdr.seq_no);
+                return -1;
+            }
+
+            if (0 < (sz = msg->hdr.size - MSG_HDR_SZ)) {
+                rc = recv_avd_msg(sockfd, msg->buf, sz);
+                if (0 > rc) {
+                    return rc;
+                }
+            }
+
+            fp = fopen(INPUT_FILE, "ab+");
+
+            if (user->file_seq_no == 1) {
+                fseek(fp, 0L, SEEK_SET);
+            }
+
+            fwrite(msg->buf, rc, 1, fp);
+
+            if (is_msg_type(msg->hdr.type, AVD_MSG_F_FILE_IN_FIN)) {
+                user->file_seq_no = 1;
+            } else {
+                user->file_seq_no += 1;
+            }
+
+            fclose(fp);
+
+            break;
+        case AVD_MSG_F_FILE_OUT:
+        case AVD_MSG_F_FILE_OUT_FIN:
+            if (user->file_seq_no != msg->hdr.seq_no) {
+                avd_log_error("Out of order message. Expecting seq %d, Received %d",
+                        user->file_seq_no, msg->hdr.seq_no);
+                return -1;
+            }
+
+            if (0 < (sz = msg->hdr.size - MSG_HDR_SZ)) {
+                rc = recv_avd_msg(sockfd, msg->buf, sz);
+                if (0 > rc) {
+                    return rc;
+                }
+            }
+
+            fp = fopen(OUTPUT_FILE, "ab+");
+
+            if (user->file_seq_no == 1) {
+                fseek(fp, 0L, SEEK_SET);
+            }
+
+            fwrite(msg->buf, rc, 1, fp);
+
+            if (is_msg_type(msg->hdr.type, AVD_MSG_F_FILE_OUT_FIN)) {
+                user->file_seq_no = 1;
+            } else {
+                user->file_seq_no += 1;
+            }
+
+            fclose(fp);
 
             break;
         case AVD_MSG_F_CLOSE:
             remove_user_s_session(user->id);
             close_user_connection(srvr, sockfd, user->poll_id, user_idx);
+            break;
+        case AVD_MSG_F_CTRL:
             break;
         default:
             avd_log_error("Error");
@@ -298,9 +443,11 @@ void user_communications(server_t *srvr, int *nready) {
 
             if (0 < recv_avd_hdr(sockfd, &rmsg.hdr)) {
                 if (0 > (rc = process_user_message(srvr, sockfd, &rmsg, user_idx))) {
+                    avd_log_error("Error receiving message");
                     close_user_connection(srvr, sockfd, i, user_idx);
                 }
             } else {
+                avd_log_error("Error receiving header");
                 close_user_connection(srvr, sockfd, i, user_idx);
             }
 
@@ -574,10 +721,9 @@ int32_t main (int32_t argc, char const *argv[]) {
     memset(&w_srvr, 0, sizeof(u_srvr));
     memset(&cfg, 0, sizeof(cfg));
 
-    cfg.type = SERVER;
     g_conf_file_name = (char *)argv[1];
 
-    if (0 != process_config_file(g_conf_file_name, &cfg)) {
+    if (0 != process_config_file(g_conf_file_name, SERVER, &cfg)) {
         avd_log_fatal("Failed to parse config file");
         exit(EXIT_FAILURE);
     }

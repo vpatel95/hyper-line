@@ -18,12 +18,14 @@
         "tasks": [{
             "name": "ABCD",
             "num_stages": 2,
+            "file" : "/home/vpatel95/Projects/avd-pipe/src/build/avd_worker",
+            "input" : "/home/vpatel95/Projects/avd-pipe/src/include/avd_message.h",
             "stages": [{
-                "bin": "path to SL binary",
-                "args": "arg list"
+                "num": 1,
+                "func": "func_name_1"
             }, {
-                "bin": "path to SL binary",
-                "args": "args list"
+                "num": 2,
+                "func": "func_name_2"
             }]
         }]
     },

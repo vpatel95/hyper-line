@@ -104,10 +104,9 @@ int32_t main (int32_t argc, char *argv[]) {
 
     memset(&cfg, 0, sizeof(cfg));
 
-    cfg.type = WORKER;
     g_conf_file_name = (char *)argv[1];
 
-    if (0 != process_config_file(g_conf_file_name, &cfg)) {
+    if (0 != process_config_file(g_conf_file_name, WORKER, &cfg)) {
         print("Failed to parse config file %s\n", argv[1]);
         exit(EXIT_FAILURE);
     }

@@ -8,40 +8,54 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <errno.h>
-
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 
 #include "avd_log.h"
 
-#define  __INT8_NUM_BYTES__ (1)
-#define  __INT16_NUM_BYTES__ (2)
-#define  __INT32_NUM_BYTES__ (4)
-#define  __INT64_NUM_BYTES__ (8)
-#define  __FLOAT_NUM_BYTES__ (4)
-#define  __DOUBLE_NUM_BYTES__ (8)
+#define  __INT8_NUM_BYTES__     (1)
+#define  __INT16_NUM_BYTES__    (2)
+#define  __INT32_NUM_BYTES__    (4)
+#define  __INT64_NUM_BYTES__    (8)
+#define  __FLOAT_NUM_BYTES__    (4)
+#define  __DOUBLE_NUM_BYTES__   (8)
 
-#define  __boolean_encoded_array_size __int8_t_encoded_array_size
-#define  __boolean_encode_array __int8_t_encode_array
-#define  __boolean_decode_array __int8_t_decode_array
-#define  __boolean_encode_little_endian_array __int8_t_encode_little_endian_array
-#define  __boolean_decode_little_endian_array __int8_t_decode_little_endian_array
-#define  __boolean_clone_array __int8_t_clone_array
+#define  __boolean_encoded_array_size           __int8_t_encoded_array_size
+#define  __boolean_encode_array                 __int8_t_encode_array
+#define  __boolean_decode_array                 __int8_t_decode_array
+#define  __boolean_encode_little_endian_array   __int8_t_encode_little_endian_array
+#define  __boolean_decode_little_endian_array   __int8_t_decode_little_endian_array
+#define  __boolean_clone_array                  __int8_t_clone_array
 
 // Message type flags
-#define AVD_MSG_F_NEW_CON   (1 << 0)
-#define AVD_MSG_F_RE_CON    (1 << 1)
-#define AVD_MSG_F_FILE      (1 << 2)
-#define AVD_MSG_F_CTRL      (1 << 3)
-#define AVD_MSG_F_CLOSE     (1 << 4)
+#define AVD_MSG_F_NEW_CON       (1 << 0)
+#define AVD_MSG_F_RE_CON        (1 << 1)
+#define AVD_MSG_F_TASK          (1 << 2)
+#define AVD_MSG_F_FILE_TSK      (1 << 3)
+#define AVD_MSG_F_FILE_TSK_FIN  (1 << 4)
+#define AVD_MSG_F_FILE_IN       (1 << 5)
+#define AVD_MSG_F_FILE_IN_FIN   (1 << 6)
+#define AVD_MSG_F_FILE_OUT      (1 << 7)
+#define AVD_MSG_F_FILE_OUT_FIN  (1 << 8)
+#define AVD_MSG_F_CTRL          (1 << 9)
+#define AVD_MSG_F_CLOSE         (1 << 10)
 
 #define reset_msg_type(type)        (type = 0)
 #define set_msg_type(type, flag)    (type |= flag)
 #define unset_msg_type(type, flag)  (type &= (~flag))
 #define is_msg_type(type, flag)     (type & flag)
 
-#define MSG_HDR_SZ sizeof(msg_hdr_t)
-#define msg_sz(__msg) MSG_HDR_SZ + sizeof(__msg)
+#define MSG_HDR_SZ      sizeof(msg_hdr_t)
+#define msg_sz(__msg)   MSG_HDR_SZ + sizeof(__msg)
+
+#define MAX_BUF_SZ          2048
+#define MAX_CHUNK_SZ        256
+#define MAX_STG             3
+
+#define INPUT_FILE      "/opt/avd-pipe/input"
+#define TASK_FILE       "/opt/avd-pipe/task.so"
+#define OUTPUT_FILE     "/opt/avd-pipe/output"
 
 /* Message Header
  *  1. Type : type of message - e.g new user, reconnect etc
@@ -56,7 +70,7 @@ typedef struct msg_hdr_s {
 
 typedef struct message_s {
     msg_hdr_t   hdr;
-    char        buf[1024];
+    char        buf[MAX_BUF_SZ];
 } __attribute__((packed)) message_t;
 
 // User Message : Reconnect (rc)
@@ -70,16 +84,71 @@ typedef struct smsg_conn_s {
     int32_t     poll_id;
 } smsg_conn_t;
 
+typedef struct tmsg_file_s {
+    char    *buf;
+} tmsg_file_t;
+
+typedef struct tmsg_stage_s {
+    int32_t     num;
+    char        *func;
+} tmsg_stage_t;
+
+typedef struct tmsg_args_s {
+    int32_t         num_stages;
+    char            *task_name;
+    tmsg_stage_t    stages[MAX_STG];
+} tmsg_args_t;
+
+static inline FILE * file_from_flag(int32_t flag) {
+    if (flag == AVD_MSG_F_FILE_IN)
+        return fopen(INPUT_FILE, "ab+");
+
+    if (flag == AVD_MSG_F_FILE_OUT)
+        return fopen(OUTPUT_FILE, "ab+");
+
+    if (flag == AVD_MSG_F_FILE_TSK)
+        return fopen(TASK_FILE, "ab+");
+
+    return NULL;
+}
+
+static inline size_t fsize (FILE *f) {
+    size_t  c = ftell(f);
+    size_t  l;
+    fseek(f, 0L, SEEK_END);
+    l = ftell(f);
+    fseek(f, c, SEEK_SET);
+    return l;
+}
+
+ssize_t recvn(int32_t fd, void *vptr, size_t n, int32_t flag) {
+    size_t  nleft;
+    ssize_t nrecv;
+    char    *ptr;
+
+    ptr = vptr;
+    nleft = n;
+    while (nleft > 0) {
+        if ( (nrecv = recv(fd, ptr, nleft, flag)) < 0) {
+            if (errno == EINTR)
+                nrecv = 0;
+            else
+                return -1;
+        } else if (nrecv == 0)
+            break;
+
+        nleft -= nrecv;
+        ptr   += nrecv;
+    }
+    return(n - nleft);
+}
+
 int32_t recv_avd_hdr(int32_t sockfd, msg_hdr_t *h) {
     int32_t     rc = -1;
 
-    rc = recv(sockfd, h, MSG_HDR_SZ, 0);
+    rc = recvn(sockfd, h, MSG_HDR_SZ, 0);
 
-    if (0 == rc) {
-        return rc;
-    }
-
-    if (MSG_HDR_SZ != rc) {
+    if (MSG_HDR_SZ != rc && 0 != rc) {
         avd_log_error("Error receiving avd_hdr");
         avd_log_debug("Error : %s", strerror(errno));
         return -1;
@@ -90,83 +159,84 @@ int32_t recv_avd_hdr(int32_t sockfd, msg_hdr_t *h) {
 }
 
 int32_t recv_avd_msg(int32_t sockfd, char *buf, size_t sz) {
-    int32_t     rc = -1;
+    int32_t     rc;
 
-    if (0 >= (rc = recv(sockfd, buf, sz, 0))) {
+    if (0 >= (rc = recvn(sockfd, buf, sz, 0))) {
         avd_log_error("Error receiving avd_msg");
         avd_log_debug("Error : %s", strerror(errno));
-        return rc;
+        return -1;
     }
 
+    avd_log_debug("sz : %d, rc : %d", sz, rc);
     avd_log_debug("Received Msg of size :%d", rc);
     return rc;
 }
 
-static inline uint32_t __int8_t_encoded_array_sz(const int8_t *msg, uint32_t elements) {
+static inline uint32_t __int8_t_encoded_array_sz(const int8_t *msg, uint32_t n_ele) {
     (void) msg;
-    return (__INT8_NUM_BYTES__ * elements);
+    return (__INT8_NUM_BYTES__ * n_ele);
 }
 
 static inline int32_t __int8_t_encode_array(void *_buf, uint32_t offset, uint32_t maxlen,
-                                            const int8_t *p, uint32_t elements) {
-    if (maxlen < elements)
+                                            const int8_t *p, uint32_t n_ele) {
+    if (maxlen < n_ele)
         return -1;
 
     char    *buf = (char *) _buf;
 
-    memcpy(&buf[offset], p, elements);
+    memcpy(&buf[offset], p, n_ele);
 
-    return elements;
+    return n_ele;
 }
 
 static inline int32_t __int8_t_decode_array(const void *_buf, uint32_t offset, uint32_t maxlen,
-                                        int8_t *p, uint32_t elements) {
-    if (maxlen < elements)
+                                        int8_t *p, uint32_t n_ele) {
+    if (maxlen < n_ele)
         return -1;
 
     char    *buf = (char *) _buf;
 
-    memcpy(p, &buf[offset], elements);
+    memcpy(p, &buf[offset], n_ele);
 
-    return elements;
+    return n_ele;
 }
 
 static inline int32_t __int8_t_encode_little_endian_array(void *_buf, uint32_t offset, uint32_t maxlen,
-                                                      const int8_t *p, uint32_t elements) {
-    return __int8_t_encode_array(_buf, offset, maxlen, p, elements);
+                                                      const int8_t *p, uint32_t n_ele) {
+    return __int8_t_encode_array(_buf, offset, maxlen, p, n_ele);
 }
 
 static inline int32_t __int8_t_decode_little_endian_array(const void *_buf, uint32_t offset, uint32_t maxlen,
-                                                          int8_t *p, uint32_t elements) {
-    return __int8_t_decode_array(_buf, offset, maxlen, p, elements);
+                                                          int8_t *p, uint32_t n_ele) {
+    return __int8_t_decode_array(_buf, offset, maxlen, p, n_ele);
 }
 
-static inline uint32_t __int8_t_clone_array(const int8_t *p, int8_t *q, uint32_t elements) {
-    uint32_t    n = elements * sizeof(int8_t);
+static inline uint32_t __int8_t_clone_array(const int8_t *p, int8_t *q, uint32_t n_ele) {
+    uint32_t    n = n_ele * sizeof(int8_t);
 
     memcpy(q, p, n);
 
     return n;
 }
 
-static inline uint32_t __int16_t_encoded_array_sz(const int16_t *p, uint32_t elements) {
+static inline uint32_t __int16_t_encoded_array_sz(const int16_t *p, uint32_t n_ele) {
     (void) p;
-    return (__INT16_NUM_BYTES__ * elements);
+    return (__INT16_NUM_BYTES__ * n_ele);
 }
 
 static inline int32_t __int16_t_encode_array(void *_buf, uint32_t offset, uint32_t maxlen,
-                                             const int16_t *p, uint32_t elements) {
-    uint32_t        total_size = (__INT16_NUM_BYTES__ * elements);
+                                             const int16_t *p, uint32_t n_ele) {
+    uint32_t        total_size = (__INT16_NUM_BYTES__ * n_ele);
     uint32_t        pos = offset;
-    uint32_t        ele;
+    uint32_t        i;
     char            *buf = (char *) _buf;
     const uint16_t  *unsigned_p = (uint16_t *)p;
 
     if (maxlen < total_size)
         return -1;
 
-    for (ele = 0; ele < elements; ++ele) {
-        uint16_t v = unsigned_p[ele];
+    for (i = 0; i < n_ele; ++i) {
+        uint16_t v = unsigned_p[i];
         buf[pos++] = (v >> 8) & 0xff;
         buf[pos++] = (v & 0xff);
     }
@@ -175,17 +245,17 @@ static inline int32_t __int16_t_encode_array(void *_buf, uint32_t offset, uint32
 }
 
 static inline int32_t __int16_t_decode_array(const void *_buf, uint32_t offset, uint32_t maxlen,
-                                             int16_t *p, uint32_t elements) {
-    u_int32_t   total_size = (__INT16_NUM_BYTES__ * elements);
+                                             int16_t *p, uint32_t n_ele) {
+    u_int32_t   total_size = (__INT16_NUM_BYTES__ * n_ele);
     char        *buf = (char *) _buf;
     uint32_t    pos = offset;
-    uint32_t    ele;
+    uint32_t    i;
 
     if (maxlen < total_size)
         return -1;
 
-    for (ele = 0; ele < elements; ++ele) {
-        p[ele] = (buf[pos] << 8) + buf[pos + 1];
+    for (i = 0; i < n_ele; ++i) {
+        p[i] = (buf[pos] << 8) + buf[pos + 1];
         pos += 2;
     }
 
@@ -193,17 +263,17 @@ static inline int32_t __int16_t_decode_array(const void *_buf, uint32_t offset, 
 }
 
 static inline int32_t __int16_t_encode_little_endian_array(void *_buf, uint32_t offset, uint32_t maxlen,
-                                                           const int16_t *p, uint32_t elements) {
-    uint32_t        total_size = (__INT16_NUM_BYTES__ * elements);
+                                                           const int16_t *p, uint32_t n_ele) {
+    uint32_t        total_size = (__INT16_NUM_BYTES__ * n_ele);
     uint32_t        pos = offset;
-    uint32_t        ele;
+    uint32_t        i;
     char            *buf = (char *) _buf;
     const uint16_t  *unsigned_p = (uint16_t *)p;
 
     if (maxlen < total_size) return -1;
 
-    for (ele = 0; ele < elements; ++ele) {
-        uint16_t v = unsigned_p[ele];
+    for (i = 0; i < n_ele; ++i) {
+        uint16_t v = unsigned_p[i];
         buf[pos++] = (v & 0xff);
         buf[pos++] = (v >> 8) & 0xff;
     }
@@ -212,47 +282,47 @@ static inline int32_t __int16_t_encode_little_endian_array(void *_buf, uint32_t 
 }
 
 static inline int32_t __int16_t_decode_little_endian_array(const void *_buf, uint32_t offset, uint32_t maxlen,
-                                                           int16_t *p, uint32_t elements) {
-    uint32_t    total_size = (__INT16_NUM_BYTES__ * elements);
+                                                           int16_t *p, uint32_t n_ele) {
+    uint32_t    total_size = (__INT16_NUM_BYTES__ * n_ele);
     char        *buf = (char *) _buf;
     uint32_t    pos = offset;
-    uint32_t    ele;
+    uint32_t    i;
 
     if (maxlen < total_size) return -1;
 
-    for (ele = 0; ele < elements; ++ele) {
-        p[ele] = (buf[pos + 1] << 8) + buf[pos];
+    for (i = 0; i < n_ele; ++i) {
+        p[i] = (buf[pos + 1] << 8) + buf[pos];
         pos += 2;
     }
 
     return total_size;
 }
 
-static inline uint32_t __int16_t_clone_array(const int16_t *p, int16_t *q, uint32_t elements) {
-    uint32_t    n = elements * sizeof(int16_t);
+static inline uint32_t __int16_t_clone_array(const int16_t *p, int16_t *q, uint32_t n_ele) {
+    uint32_t    n = n_ele * sizeof(int16_t);
 
     memcpy(q, p, n);
 
     return n;
 }
 
-static inline uint32_t __int32_t_encoded_array_sz(const int32_t *p, uint32_t elements) {
+static inline uint32_t __int32_t_encoded_array_sz(const int32_t *p, uint32_t n_ele) {
     (void) p;
-    return (__INT32_NUM_BYTES__ * elements);
+    return (__INT32_NUM_BYTES__ * n_ele);
 }
 
 static inline int32_t __int32_t_encode_array(void *_buf, uint32_t offset, uint32_t maxlen,
-                                         const int32_t *msg, uint32_t elements) {
-    uint32_t        total_size = (__INT32_NUM_BYTES__ * elements);
+                                         const int32_t *msg, uint32_t n_ele) {
+    uint32_t        total_size = (__INT32_NUM_BYTES__ * n_ele);
     uint32_t        pos = offset;
-    uint32_t        ele;
+    uint32_t        i;
     char            *buf = (char *) _buf;
     const uint32_t * unsigned_msg = (uint32_t *)msg;
 
     if (maxlen < total_size) return -1;
 
-    for (ele = 0; ele < elements; ++ele) {
-        uint32_t v = unsigned_msg[ele];
+    for (i = 0; i < n_ele; ++i) {
+        uint32_t v = unsigned_msg[i];
         buf[pos++] = (v >> 24) & 0xff;
         buf[pos++] = (v >> 16) & 0xff;
         buf[pos++] = (v >> 8) & 0xff;
@@ -263,17 +333,17 @@ static inline int32_t __int32_t_encode_array(void *_buf, uint32_t offset, uint32
 }
 
 static inline int32_t __int32_t_decode_array(const void *_buf, uint32_t offset, uint32_t maxlen,
-                                         int32_t *msg, uint32_t elements) {
-    uint32_t    total_size = (__INT32_NUM_BYTES__ * elements);
+                                         int32_t *msg, uint32_t n_ele) {
+    uint32_t    total_size = (__INT32_NUM_BYTES__ * n_ele);
     char        *buf = (char *) _buf;
     uint32_t    pos = offset;
-    uint32_t    ele;
+    uint32_t    i;
 
     if (maxlen < total_size)
         return -1;
 
-    for (ele = 0; ele < elements; ++ele) {
-        msg[ele] = (((uint32_t)buf[pos + 0]) << 24) +
+    for (i = 0; i < n_ele; ++i) {
+        msg[i] = (((uint32_t)buf[pos + 0]) << 24) +
                        (((uint32_t)buf[pos + 1]) << 16) +
                        (((uint32_t)buf[pos + 2]) << 8) +
                        ((uint32_t)buf[pos + 3]);
@@ -284,18 +354,18 @@ static inline int32_t __int32_t_decode_array(const void *_buf, uint32_t offset, 
 }
 
 static inline int32_t __int32_t_encode_little_endian_array(void *_buf, uint32_t offset, uint32_t maxlen,
-                                                           const int32_t *p, uint32_t elements) {
-    uint32_t        total_size = (__INT32_NUM_BYTES__ * elements);
+                                                           const int32_t *p, uint32_t n_ele) {
+    uint32_t        total_size = (__INT32_NUM_BYTES__ * n_ele);
     uint32_t        pos = offset;
-    uint32_t        ele;
+    uint32_t        i;
     char            *buf = (char *) _buf;
     const uint32_t  *unsigned_p = (uint32_t*)p;
 
     if (maxlen < total_size)
         return -1;
 
-    for (ele = 0; ele < elements; ++ele) {
-        uint32_t v = unsigned_p[ele];
+    for (i = 0; i < n_ele; ++i) {
+        uint32_t v = unsigned_p[i];
         buf[pos++] = (v & 0xff);
         buf[pos++] = (v >> 8) & 0xff;
         buf[pos++] = (v >> 16) & 0xff;
@@ -305,17 +375,17 @@ static inline int32_t __int32_t_encode_little_endian_array(void *_buf, uint32_t 
     return total_size;
 }
 
-static inline int32_t __int32_t_decode_little_endian_array(const void *_buf, uint32_t offset, uint32_t maxlen, int32_t *p, uint32_t elements) {
-    uint32_t    total_size = (__INT32_NUM_BYTES__ * elements);
+static inline int32_t __int32_t_decode_little_endian_array(const void *_buf, uint32_t offset, uint32_t maxlen, int32_t *p, uint32_t n_ele) {
+    uint32_t    total_size = (__INT32_NUM_BYTES__ * n_ele);
     uint32_t    pos = offset;
-    uint32_t    ele;
+    uint32_t    i;
     char        *buf = (char *) _buf;
 
     if (maxlen < total_size)
         return -1;
 
-    for (ele = 0; ele < elements; ++ele) {
-        p[ele] = (((uint32_t)buf[pos + 3]) << 24) +
+    for (i = 0; i < n_ele; ++i) {
+        p[i] = (((uint32_t)buf[pos + 3]) << 24) +
                       (((uint32_t)buf[pos + 2]) << 16) +
                       (((uint32_t)buf[pos + 1]) << 8) +
                        ((uint32_t)buf[pos + 0]);
@@ -325,8 +395,8 @@ static inline int32_t __int32_t_decode_little_endian_array(const void *_buf, uin
     return total_size;
 }
 
-static inline uint32_t __int32_t_clone_array(const int32_t *p, int32_t *q, uint32_t elements) {
-    uint32_t    n = elements * sizeof(int32_t);
+static inline uint32_t __int32_t_clone_array(const int32_t *p, int32_t *q, uint32_t n_ele) {
+    uint32_t    n = n_ele * sizeof(int32_t);
 
     memcpy(q, p, n);
 
@@ -334,22 +404,22 @@ static inline uint32_t __int32_t_clone_array(const int32_t *p, int32_t *q, uint3
 }
 
 
-static inline uint32_t __int64_t_encoded_array_sz(const int64_t *p, uint32_t elements) {
+static inline uint32_t __int64_t_encoded_array_sz(const int64_t *p, uint32_t n_ele) {
     (void)p;
-    return __INT64_NUM_BYTES__ * elements;
+    return __INT64_NUM_BYTES__ * n_ele;
 }
 
-static inline int32_t __int64_t_encode_array(void *_buf, uint32_t offset, uint32_t maxlen, const int64_t *p, uint32_t elements) {
-    uint32_t total_size = __INT64_NUM_BYTES__ * elements;
+static inline int32_t __int64_t_encode_array(void *_buf, uint32_t offset, uint32_t maxlen, const int64_t *p, uint32_t n_ele) {
+    uint32_t total_size = __INT64_NUM_BYTES__ * n_ele;
     char *buf = (char *) _buf;
     uint32_t pos = offset;
-    uint32_t ele;
+    uint32_t i;
 
     if (maxlen < total_size) return -1;
 
     const uint64_t* unsigned_p = (uint64_t*)p;
-    for (ele = 0; ele < elements; ++ele) {
-        uint64_t v = unsigned_p[ele];
+    for (i = 0; i < n_ele; ++i) {
+        uint64_t v = unsigned_p[i];
         buf[pos++] = (v>>56)&0xff;
         buf[pos++] = (v>>48)&0xff;
         buf[pos++] = (v>>40)&0xff;
@@ -363,15 +433,15 @@ static inline int32_t __int64_t_encode_array(void *_buf, uint32_t offset, uint32
     return total_size;
 }
 
-static inline int32_t __int64_t_decode_array(const void *_buf, uint32_t offset, uint32_t maxlen, int64_t *p, uint32_t elements) {
-    uint32_t total_size = __INT64_NUM_BYTES__ * elements;
+static inline int32_t __int64_t_decode_array(const void *_buf, uint32_t offset, uint32_t maxlen, int64_t *p, uint32_t n_ele) {
+    uint32_t total_size = __INT64_NUM_BYTES__ * n_ele;
     char *buf = (char *) _buf;
     uint32_t pos = offset;
-    uint32_t ele;
+    uint32_t i;
 
     if (maxlen < total_size) return -1;
 
-    for (ele = 0; ele < elements; ++ele) {
+    for (i = 0; i < n_ele; ++i) {
         uint64_t a = (((uint32_t)buf[pos+0])<<24) +
                      (((uint32_t)buf[pos+1])<<16) +
                      (((uint32_t)buf[pos+2])<<8) +
@@ -382,23 +452,23 @@ static inline int32_t __int64_t_decode_array(const void *_buf, uint32_t offset, 
                      (((uint32_t)buf[pos+2])<<8) +
                       ((uint32_t)buf[pos+3]);
         pos+=4;
-        p[ele] = (a<<32) + (b&0xffffffff);
+        p[i] = (a<<32) + (b&0xffffffff);
     }
 
     return total_size;
 }
 
-static inline int32_t __int64_t_encode_little_endian_array(void *_buf, uint32_t offset, uint32_t maxlen, const int64_t *p, uint32_t elements) {
-    uint32_t total_size = __INT64_NUM_BYTES__ * elements;
+static inline int32_t __int64_t_encode_little_endian_array(void *_buf, uint32_t offset, uint32_t maxlen, const int64_t *p, uint32_t n_ele) {
+    uint32_t total_size = __INT64_NUM_BYTES__ * n_ele;
     char *buf = (char *) _buf;
     uint32_t pos = offset;
-    uint32_t ele;
+    uint32_t i;
 
     if (maxlen < total_size) return -1;
 
     const uint64_t* unsigned_p = (uint64_t*)p;
-    for (ele = 0; ele < elements; ++ele) {
-        uint64_t v = unsigned_p[ele];
+    for (i = 0; i < n_ele; ++i) {
+        uint64_t v = unsigned_p[i];
         buf[pos++] = (v & 0xff);
         buf[pos++] = (v>>8)&0xff;
         buf[pos++] = (v>>16)&0xff;
@@ -412,15 +482,15 @@ static inline int32_t __int64_t_encode_little_endian_array(void *_buf, uint32_t 
     return total_size;
 }
 
-static inline int32_t __int64_t_decode_little_endian_array(const void *_buf, uint32_t offset, uint32_t maxlen, int64_t *p, uint32_t elements) {
-    uint32_t total_size = __INT64_NUM_BYTES__ * elements;
+static inline int32_t __int64_t_decode_little_endian_array(const void *_buf, uint32_t offset, uint32_t maxlen, int64_t *p, uint32_t n_ele) {
+    uint32_t total_size = __INT64_NUM_BYTES__ * n_ele;
     char *buf = (char *) _buf;
     uint32_t pos = offset;
-    uint32_t ele;
+    uint32_t i;
 
     if (maxlen < total_size) return -1;
 
-    for (ele = 0; ele < elements; ++ele) {
+    for (i = 0; i < n_ele; ++i) {
         uint64_t b = (((uint32_t)buf[pos+3])<<24) +
                      (((uint32_t)buf[pos+2])<<16) +
                      (((uint32_t)buf[pos+1])<<8) +
@@ -431,14 +501,14 @@ static inline int32_t __int64_t_decode_little_endian_array(const void *_buf, uin
                      (((uint32_t)buf[pos+1])<<8) +
                       ((uint32_t)buf[pos+0]);
         pos+=4;
-        p[ele] = (a<<32) + (b&0xffffffff);
+        p[i] = (a<<32) + (b&0xffffffff);
     }
 
     return total_size;
 }
 
-static inline uint32_t __int64_t_clone_array(const int64_t *p, int64_t *q, uint32_t elements) {
-    uint32_t n = elements * sizeof(int64_t);
+static inline uint32_t __int64_t_clone_array(const int64_t *p, int64_t *q, uint32_t n_ele) {
+    uint32_t n = n_ele * sizeof(int64_t);
     memcpy(q, p, n);
     return n;
 }
@@ -446,27 +516,27 @@ static inline uint32_t __int64_t_clone_array(const int64_t *p, int64_t *q, uint3
 /**
  * FLOAT
  */
-typedef union __zcm__float_uint32_t {
-    float flt;
-    uint32_t uint;
-} __zcm__float_uint32_t;
+typedef union __avd__float_uint32_t {
+    float       flt;
+    uint32_t    uint;
+} __avd__float_uint32_t;
 
-static inline uint32_t __float_encoded_array_sz(const float *p, uint32_t elements) {
+static inline uint32_t __float_encoded_array_sz(const float *p, uint32_t n_ele) {
     (void)p;
-    return __FLOAT_NUM_BYTES__ * elements;
+    return __FLOAT_NUM_BYTES__ * n_ele;
 }
 
-static inline int32_t __float_encode_array(void *_buf, uint32_t offset, uint32_t maxlen, const float *p, uint32_t elements) {
-    uint32_t total_size = __FLOAT_NUM_BYTES__ * elements;
+static inline int32_t __float_encode_array(void *_buf, uint32_t offset, uint32_t maxlen, const float *p, uint32_t n_ele) {
+    uint32_t total_size = __FLOAT_NUM_BYTES__ * n_ele;
     char *buf = (char *) _buf;
     uint32_t pos = offset;
-    uint32_t ele;
-    __zcm__float_uint32_t tmp;
+    uint32_t i;
+    __avd__float_uint32_t tmp;
 
     if (maxlen < total_size) return -1;
 
-    for (ele = 0; ele < elements; ++ele) {
-        tmp.flt = p[ele];
+    for (i = 0; i < n_ele; ++i) {
+        tmp.flt = p[i];
         buf[pos++] = (tmp.uint >> 24) & 0xff;
         buf[pos++] = (tmp.uint >> 16) & 0xff;
         buf[pos++] = (tmp.uint >>  8) & 0xff;
@@ -476,38 +546,38 @@ static inline int32_t __float_encode_array(void *_buf, uint32_t offset, uint32_t
     return total_size;
 }
 
-static inline int32_t __float_decode_array(const void *_buf, uint32_t offset, uint32_t maxlen, float *p, uint32_t elements) {
-    uint32_t total_size = __FLOAT_NUM_BYTES__ * elements;
+static inline int32_t __float_decode_array(const void *_buf, uint32_t offset, uint32_t maxlen, float *p, uint32_t n_ele) {
+    uint32_t total_size = __FLOAT_NUM_BYTES__ * n_ele;
     char *buf = (char *) _buf;
     uint32_t pos = offset;
-    uint32_t ele;
-    __zcm__float_uint32_t tmp;
+    uint32_t i;
+    __avd__float_uint32_t tmp;
 
     if (maxlen < total_size) return -1;
 
-    for (ele = 0; ele < elements; ++ele) {
+    for (i = 0; i < n_ele; ++i) {
         tmp.uint = (((uint32_t)buf[pos + 0]) << 24) |
                    (((uint32_t)buf[pos + 1]) << 16) |
                    (((uint32_t)buf[pos + 2]) <<  8) |
                     ((uint32_t)buf[pos + 3]);
-        p[ele] = tmp.flt;
+        p[i] = tmp.flt;
         pos += 4;
     }
 
     return total_size;
 }
 
-static inline int32_t __float_encode_little_endian_array(void *_buf, uint32_t offset, uint32_t maxlen, const float *p, uint32_t elements) {
-    uint32_t total_size = __FLOAT_NUM_BYTES__ * elements;
+static inline int32_t __float_encode_little_endian_array(void *_buf, uint32_t offset, uint32_t maxlen, const float *p, uint32_t n_ele) {
+    uint32_t total_size = __FLOAT_NUM_BYTES__ * n_ele;
     char *buf = (char *) _buf;
     uint32_t pos = offset;
-    uint32_t ele;
-    __zcm__float_uint32_t tmp;
+    uint32_t i;
+    __avd__float_uint32_t tmp;
 
     if (maxlen < total_size) return -1;
 
-    for (ele = 0; ele < elements; ++ele) {
-        tmp.flt = p[ele];
+    for (i = 0; i < n_ele; ++i) {
+        tmp.flt = p[i];
         buf[pos++] = (tmp.uint      ) & 0xff;
         buf[pos++] = (tmp.uint >>  8) & 0xff;
         buf[pos++] = (tmp.uint >> 16) & 0xff;
@@ -517,29 +587,29 @@ static inline int32_t __float_encode_little_endian_array(void *_buf, uint32_t of
     return total_size;
 }
 
-static inline int32_t __float_decode_little_endian_array(const void *_buf, uint32_t offset, uint32_t maxlen, float *p, uint32_t elements) {
-    uint32_t total_size = __FLOAT_NUM_BYTES__ * elements;
+static inline int32_t __float_decode_little_endian_array(const void *_buf, uint32_t offset, uint32_t maxlen, float *p, uint32_t n_ele) {
+    uint32_t total_size = __FLOAT_NUM_BYTES__ * n_ele;
     char *buf = (char *) _buf;
     uint32_t pos = offset;
-    uint32_t ele;
-    __zcm__float_uint32_t tmp;
+    uint32_t i;
+    __avd__float_uint32_t tmp;
 
     if (maxlen < total_size) return -1;
 
-    for (ele = 0; ele < elements; ++ele) {
+    for (i = 0; i < n_ele; ++i) {
         tmp.uint = (((uint32_t)buf[pos + 3]) << 24) |
                    (((uint32_t)buf[pos + 2]) << 16) |
                    (((uint32_t)buf[pos + 1]) <<  8) |
                     ((uint32_t)buf[pos + 0]);
-        p[ele] = tmp.flt;
+        p[i] = tmp.flt;
         pos += 4;
     }
 
     return total_size;
 }
 
-static inline uint32_t __float_clone_array(const float *p, float *q, uint32_t elements) {
-    uint32_t n = elements * sizeof(float);
+static inline uint32_t __float_clone_array(const float *p, float *q, uint32_t n_ele) {
+    uint32_t n = n_ele * sizeof(float);
     memcpy(q, p, n);
     return n;
 }
@@ -547,27 +617,27 @@ static inline uint32_t __float_clone_array(const float *p, float *q, uint32_t el
 /**
  * DOUBLE
  */
-typedef union __zcm__double_uint64_t {
-    double dbl;
-    uint64_t uint;
-} __zcm__double_uint64_t;
+typedef union __avd__double_uint64_t {
+    double      dbl;
+    uint64_t    uint;
+} __avd__double_uint64_t;
 
-static inline uint32_t __double_encoded_array_sz(const double *p, uint32_t elements) {
+static inline uint32_t __double_encoded_array_sz(const double *p, uint32_t n_ele) {
     (void)p;
-    return __DOUBLE_NUM_BYTES__ * elements;
+    return __DOUBLE_NUM_BYTES__ * n_ele;
 }
 
-static inline int32_t __double_encode_array(void *_buf, uint32_t offset, uint32_t maxlen, const double *p, uint32_t elements) {
-    uint32_t total_size = __DOUBLE_NUM_BYTES__ * elements;
+static inline int32_t __double_encode_array(void *_buf, uint32_t offset, uint32_t maxlen, const double *p, uint32_t n_ele) {
+    uint32_t total_size = __DOUBLE_NUM_BYTES__ * n_ele;
     char *buf = (char *) _buf;
     uint32_t pos = offset;
-    uint32_t ele;
-    __zcm__double_uint64_t tmp;
+    uint32_t i;
+    __avd__double_uint64_t tmp;
 
     if (maxlen < total_size) return -1;
 
-    for (ele = 0; ele < elements; ++ele) {
-        tmp.dbl = p[ele];
+    for (i = 0; i < n_ele; ++i) {
+        tmp.dbl = p[i];
         buf[pos++] = (tmp.uint >> 56) & 0xff;
         buf[pos++] = (tmp.uint >> 48) & 0xff;
         buf[pos++] = (tmp.uint >> 40) & 0xff;
@@ -581,16 +651,16 @@ static inline int32_t __double_encode_array(void *_buf, uint32_t offset, uint32_
     return total_size;
 }
 
-static inline int32_t __double_decode_array(const void *_buf, uint32_t offset, uint32_t maxlen, double *p, uint32_t elements) {
-    uint32_t total_size = __DOUBLE_NUM_BYTES__ * elements;
+static inline int32_t __double_decode_array(const void *_buf, uint32_t offset, uint32_t maxlen, double *p, uint32_t n_ele) {
+    uint32_t total_size = __DOUBLE_NUM_BYTES__ * n_ele;
     char *buf = (char *) _buf;
     uint32_t pos = offset;
-    uint32_t ele;
-    __zcm__double_uint64_t tmp;
+    uint32_t i;
+    __avd__double_uint64_t tmp;
 
     if (maxlen < total_size) return -1;
 
-    for (ele = 0; ele < elements; ++ele) {
+    for (i = 0; i < n_ele; ++i) {
         uint64_t a = (((uint32_t) buf[pos + 0]) << 24) +
                      (((uint32_t) buf[pos + 1]) << 16) +
                      (((uint32_t) buf[pos + 2]) <<  8) +
@@ -602,23 +672,23 @@ static inline int32_t __double_decode_array(const void *_buf, uint32_t offset, u
                       ((uint32_t) buf[pos + 3]);
         pos += 4;
         tmp.uint = (a << 32) + (b & 0xffffffff);
-        p[ele] = tmp.dbl;
+        p[i] = tmp.dbl;
     }
 
     return total_size;
 }
 
-static inline int32_t __double_encode_little_endian_array(void *_buf, uint32_t offset, uint32_t maxlen, const double *p, uint32_t elements) {
-    uint32_t total_size = __DOUBLE_NUM_BYTES__ * elements;
+static inline int32_t __double_encode_little_endian_array(void *_buf, uint32_t offset, uint32_t maxlen, const double *p, uint32_t n_ele) {
+    uint32_t total_size = __DOUBLE_NUM_BYTES__ * n_ele;
     char *buf = (char *) _buf;
     uint32_t pos = offset;
-    uint32_t ele;
-    __zcm__double_uint64_t tmp;
+    uint32_t i;
+    __avd__double_uint64_t tmp;
 
     if (maxlen < total_size) return -1;
 
-    for (ele = 0; ele < elements; ++ele) {
-        tmp.dbl = p[ele];
+    for (i = 0; i < n_ele; ++i) {
+        tmp.dbl = p[i];
         buf[pos++] = (tmp.uint      ) & 0xff;
         buf[pos++] = (tmp.uint >>  8) & 0xff;
         buf[pos++] = (tmp.uint >> 16) & 0xff;
@@ -632,16 +702,16 @@ static inline int32_t __double_encode_little_endian_array(void *_buf, uint32_t o
     return total_size;
 }
 
-static inline int32_t __double_decode_little_endian_array(const void *_buf, uint32_t offset, uint32_t maxlen, double *p, uint32_t elements) {
-    uint32_t total_size = __DOUBLE_NUM_BYTES__ * elements;
+static inline int32_t __double_decode_little_endian_array(const void *_buf, uint32_t offset, uint32_t maxlen, double *p, uint32_t n_ele) {
+    uint32_t total_size = __DOUBLE_NUM_BYTES__ * n_ele;
     char *buf = (char *) _buf;
     uint32_t pos = offset;
-    uint32_t ele;
-    __zcm__double_uint64_t tmp;
+    uint32_t i;
+    __avd__double_uint64_t tmp;
 
     if (maxlen < total_size) return -1;
 
-    for (ele = 0; ele < elements; ++ele) {
+    for (i = 0; i < n_ele; ++i) {
         uint64_t b = (((uint32_t)buf[pos + 3]) << 24) +
                      (((uint32_t)buf[pos + 2]) << 16) +
                      (((uint32_t)buf[pos + 1]) <<  8) +
@@ -653,14 +723,14 @@ static inline int32_t __double_decode_little_endian_array(const void *_buf, uint
                       ((uint32_t)buf[pos + 0]);
         pos += 4;
         tmp.uint = (a << 32) + (b & 0xffffffff);
-        p[ele] = tmp.dbl;
+        p[i] = tmp.dbl;
     }
 
     return total_size;
 }
 
-static inline uint32_t __double_clone_array(const double *p, double *q, uint32_t elements) {
-    uint32_t n = elements * sizeof(double);
+static inline uint32_t __double_clone_array(const double *p, double *q, uint32_t n_ele) {
+    uint32_t n = n_ele * sizeof(double);
     memcpy(q, p, n);
     return n;
 }
@@ -668,97 +738,98 @@ static inline uint32_t __double_clone_array(const double *p, double *q, uint32_t
 /**
  * STRING
  */
-static inline int32_t __string_decode_array_cleanup(char **s, uint32_t elements) {
-    uint32_t ele;
-    for (ele = 0; ele < elements; ++ele)
-        free(s[ele]);
+static inline int32_t __string_decode_array_cleanup(char **s, uint32_t n_ele) {
+    uint32_t i;
+    for (i = 0; i < n_ele; ++i)
+        free(s[i]);
     return 0;
 }
 
-// TODO: Figure out why "const char * const * p" doesn't work
-static inline uint32_t __string_encoded_array_sz(char * const *s, uint32_t elements) {
-    uint32_t size = 0, ele;
-    for (ele = 0; ele < elements; ++ele)
-        size += __INT32_NUM_BYTES__ + strlen(s[ele]) + __INT8_NUM_BYTES__;
+static inline uint32_t __string_encoded_array_sz(char * const *s, uint32_t n_ele) {
+    uint32_t    size = 0, i;
+
+    for (i = 0; i < n_ele; ++i)
+        size += __INT32_NUM_BYTES__ + strlen(s[i]) + __INT8_NUM_BYTES__;
 
     return size;
 }
 
-// TODO: Figure out why "const char * const * p" doesn't work
-static inline int32_t __string_encode_array(void *_buf, uint32_t offset, uint32_t maxlen, char * const *p, uint32_t elements) {
-    uint32_t pos = 0, ele;
-    int thislen;
+static inline int32_t __string_encode_array(void *_buf, uint32_t offset, uint32_t maxlen,
+                                            char * const *p, uint32_t n_ele) {
+    uint32_t    pos = 0, i;
+    int32_t     len;
 
-    for (ele = 0; ele < elements; ++ele) {
-        int32_t length = strlen(p[ele]) + __INT8_NUM_BYTES__; // length includes \0
+    for (i = 0; i < n_ele; ++i) {
+        int32_t length = strlen(p[i]) + __INT8_NUM_BYTES__; // length includes \0
 
-        thislen = __int32_t_encode_array(_buf, offset + pos, maxlen - pos, &length, 1);
-        if (thislen < 0) return thislen; else pos += thislen;
+        len = __int32_t_encode_array(_buf, offset + pos, maxlen - pos, &length, 1);
+        if (len < 0) return len; else pos += len;
 
-        thislen = __int8_t_encode_array(_buf, offset + pos, maxlen - pos, (int8_t*) p[ele], length);
-        if (thislen < 0) return thislen; else pos += thislen;
+        len = __int8_t_encode_array(_buf, offset + pos, maxlen - pos, (int8_t*) p[i], length);
+        if (len < 0) return len; else pos += len;
     }
 
     return pos;
 }
 
-static inline int32_t __string_decode_array(const void *_buf, uint32_t offset, uint32_t maxlen, char **p, uint32_t elements) {
-    uint32_t pos = 0, ele;
-    int thislen;
+static inline int32_t __string_decode_array(const void *_buf, uint32_t offset, uint32_t maxlen, char **p, uint32_t n_ele) {
+    uint32_t pos = 0, i;
+    int len;
 
-    for (ele = 0; ele < elements; ++ele) {
+    for (i = 0; i < n_ele; ++i) {
         int32_t length;
 
         // read length including \0
-        thislen = __int32_t_decode_array(_buf, offset + pos, maxlen - pos, &length, 1);
-        if (thislen < 0) return thislen; else pos += thislen;
+        len = __int32_t_decode_array(_buf, offset + pos, maxlen - pos, &length, 1);
+        if (len < 0) return len; else pos += len;
 
-        p[ele] = (char*) malloc(length);
-        thislen = __int8_t_decode_array(_buf, offset + pos, maxlen - pos, (int8_t*) p[ele], length);
-        if (thislen < 0) return thislen; else pos += thislen;
+        p[i] = (char*) malloc(length);
+        len = __int8_t_decode_array(_buf, offset + pos, maxlen - pos, (int8_t*) p[i], length);
+        if (len < 0) return len; else pos += len;
     }
 
     return pos;
 }
 
-// TODO: Figure out why "const char * const * p" doesn't work
-static inline int32_t __string_encode_little_endian_array(void *_buf, uint32_t offset, uint32_t maxlen, char * const *p, uint32_t elements) {
-    uint32_t pos = 0, ele;
-    int thislen;
+static inline int32_t __string_encode_little_endian_array(void *_buf, uint32_t offset, uint32_t maxlen, char * const *p, uint32_t n_ele) {
+    uint32_t pos = 0, i;
+    int len;
 
-    for (ele = 0; ele < elements; ++ele) {
-        int32_t length = strlen(p[ele]) + 1; // length includes \0
+    for (i = 0; i < n_ele; ++i) {
+        int32_t length = strlen(p[i]) + 1; // length includes \0
 
-        thislen = __int32_t_encode_little_endian_array(_buf, offset + pos, maxlen - pos, &length, 1);
-        if (thislen < 0) return thislen; else pos += thislen;
+        len = __int32_t_encode_little_endian_array(_buf, offset + pos, maxlen - pos, &length, 1);
+        if (len < 0) return len; else pos += len;
 
-        thislen = __int8_t_encode_little_endian_array(_buf, offset + pos, maxlen - pos, (int8_t*) p[ele], length);
-        if (thislen < 0) return thislen; else pos += thislen;
+        len = __int8_t_encode_little_endian_array(_buf, offset + pos, maxlen - pos, (int8_t*) p[i], length);
+        if (len < 0) return len; else pos += len;
     }
 
     return pos;
 }
 
-static inline int32_t __string_decode_little_endian_array(const void *_buf, uint32_t offset, uint32_t maxlen, char **p, uint32_t elements) {
-    uint32_t pos = 0, ele;
-    int thislen;
+static inline int32_t __string_decode_little_endian_array(const void *_buf, uint32_t offset, uint32_t maxlen, char **p, uint32_t n_ele) {
+    uint32_t pos = 0, i;
+    int len;
 
-    for (ele = 0; ele < elements; ++ele) {
+    for (i = 0; i < n_ele; ++i) {
         int32_t length;
 
         // read length including \0
-        thislen = __int32_t_decode_little_endian_array(_buf, offset + pos, maxlen - pos, &length, 1);
-        if (thislen < 0) return thislen; else pos += thislen;
+        len = __int32_t_decode_little_endian_array(_buf, offset + pos, maxlen - pos, &length, 1);
+        if (len < 0) return len; else pos += len;
 
-        p[ele] = (char*) malloc(length);
-        thislen = __int8_t_decode_little_endian_array(_buf, offset + pos, maxlen - pos, (int8_t*) p[ele], length);
-        if (thislen < 0) return thislen; else pos += thislen;
+        p[i] = (char*) malloc(length);
+        len = __int8_t_decode_little_endian_array(_buf, offset + pos, maxlen - pos, (int8_t*) p[i], length);
+        if (len < 0) return len; else pos += len;
     }
 
     return pos;
 }
 
-/* User Message : Reconnect | Encoding & Decoding */
+/******************************************************
+ *                 HELPER FUNCTIONS                   *
+ ******************************************************/
 uint32_t __umsg_rc_t_encoded_sz(const umsg_rc_t *msg) {
     uint32_t    sz = 0;
 
@@ -767,25 +838,11 @@ uint32_t __umsg_rc_t_encoded_sz(const umsg_rc_t *msg) {
     return sz;
 }
 
-uint32_t umsg_rc_t_encoded_sz (const umsg_rc_t *msg) {
-    return 8 + __umsg_rc_t_encoded_sz(msg);
-}
-
 int32_t __umsg_rc_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const umsg_rc_t *msg) {
     uint32_t    pos = 0;
     int32_t     len;
 
     len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->uid), 1);
-    if (len < 0) return len; else pos += len;
-
-    return pos;
-}
-
-int32_t umsg_rc_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const umsg_rc_t *msg) {
-    uint32_t    pos = 0;
-    int32_t     len;
-
-    len = __umsg_rc_t_encode(buf, offset + pos, maxlen - pos, msg);
     if (len < 0) return len; else pos += len;
 
     return pos;
@@ -801,17 +858,6 @@ int32_t __umsg_rc_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, um
     return pos;
 }
 
-int32_t umsg_rc_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, umsg_rc_t *msg) {
-    uint32_t    pos = 0;
-    int32_t     len;
-
-    len = __umsg_rc_t_decode(buf, offset + pos, maxlen - pos, msg);
-    if (len < 0) return len; else pos += len;
-
-    return pos;
-}
-
-/* Server Message : New User Connect | Encoding & Decoding */
 uint32_t __smsg_conn_t_encoded_sz(const smsg_conn_t *msg) {
     uint32_t    sz = 0;
 
@@ -819,10 +865,6 @@ uint32_t __smsg_conn_t_encoded_sz(const smsg_conn_t *msg) {
     sz += __int32_t_encoded_array_sz(&(msg->poll_id), 1);
 
     return sz;
-}
-
-uint32_t smsg_conn_t_encoded_sz (const smsg_conn_t *msg) {
-    return 8 + __smsg_conn_t_encoded_sz(msg);
 }
 
 int32_t __smsg_conn_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const smsg_conn_t *msg) {
@@ -833,16 +875,6 @@ int32_t __smsg_conn_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const 
     if (len < 0) return len; else pos += len;
 
     len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->poll_id), 1);
-    if (len < 0) return len; else pos += len;
-
-    return pos;
-}
-
-int32_t smsg_conn_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const smsg_conn_t *msg) {
-    uint32_t    pos = 0;
-    int32_t     len;
-
-    len = __smsg_conn_t_encode(buf, offset + pos, maxlen - pos, msg);
     if (len < 0) return len; else pos += len;
 
     return pos;
@@ -861,6 +893,166 @@ int32_t __smsg_conn_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, 
     return pos;
 }
 
+int32_t __tmsg_file_t_encoded_sz (const tmsg_file_t *msg) {
+    uint32_t    sz = 0;
+
+    sz += __string_encoded_array_sz(&msg->buf, 1);
+
+    return sz;
+}
+
+int32_t __tmsg_file_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const tmsg_file_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __string_encode_array(buf, offset + pos, maxlen - pos, &msg->buf, 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t __tmsg_file_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, tmsg_file_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __string_decode_array(buf, offset + pos, maxlen - pos, &msg->buf, 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t __tmsg_stage_t_encoded_array_sz(const tmsg_stage_t *msg, int32_t n_ele) {
+    uint32_t    sz = 0;
+    int32_t     i;
+
+    for (i = 0; i < n_ele; i++) {
+        sz += __int32_t_encoded_array_sz(&msg[i].num, 1);
+        sz += __string_encoded_array_sz(&msg[i].func, 1);
+    }
+
+    return sz;
+}
+
+int32_t __tmsg_stage_t_encode_array(void *buf, uint32_t offset, uint32_t maxlen, const tmsg_stage_t *msg, int32_t n_ele) {
+    uint32_t    pos = 0;
+    int32_t     len, i;
+
+    for (i = 0; i < n_ele; i++) {
+        len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &msg[i].num, 1);
+        if (len < 0) return len; else pos += len;
+
+        len = __string_encode_array(buf, offset + pos, maxlen - pos, &msg[i].func, 1);
+        if (len < 0) return len; else pos += len;
+    }
+
+    return pos;
+}
+
+int32_t __tmsg_stage_t_decode_array(const void *buf, uint32_t offset, uint32_t maxlen, tmsg_stage_t *msg, int32_t n_ele) {
+    uint32_t    pos = 0;
+    int32_t     len, i;
+
+    for (i = 0; i < n_ele; i++) {
+        len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &msg[i].num, 1);
+        if (len < 0) return len; else pos += len;
+
+        len = __string_decode_array(buf, offset + pos, maxlen - pos, &msg[i].func, 1);
+        if (len < 0) return len; else pos += len;
+    }
+
+    return pos;
+}
+
+int32_t __tmsg_args_t_encoded_array_sz(const tmsg_args_t *msg, int32_t n_ele) {
+    uint32_t    sz = 0;
+    int32_t     i;
+
+    for (i = 0; i < n_ele; i++) {
+        sz += __int32_t_encoded_array_sz(&msg[i].num_stages, 1);
+        sz += __string_encoded_array_sz(&msg[i].task_name, 1);
+        sz += __tmsg_stage_t_encoded_array_sz(msg[i].stages, msg[i].num_stages);
+    }
+
+    return sz;
+}
+
+int32_t __tmsg_args_t_encode_array(void *buf, uint32_t offset, uint32_t maxlen, const tmsg_args_t *msg, int32_t n_ele) {
+    uint32_t    pos = 0;
+    int32_t     len, i;
+
+    for (i = 0; i < n_ele; i++) {
+        len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &msg[i].num_stages, 1);
+        if (len < 0) return len; else pos += len;
+
+        len = __string_encode_array(buf, offset + pos, maxlen - pos, &msg[i].task_name, 1);
+        if (len < 0) return len; else pos += len;
+
+        len = __tmsg_stage_t_encode_array(buf, offset + pos, maxlen - pos, msg[i].stages, msg[i].num_stages);
+        if (len < 0) return len; else pos += len;
+    }
+
+    return pos;
+}
+
+int32_t __tmsg_args_t_decode_array(const void *buf, uint32_t offset, uint32_t maxlen, tmsg_args_t *msg, int32_t n_ele) {
+    uint32_t    pos = 0;
+    int32_t     len, i;
+
+    for (i = 0; i < n_ele; i++) {
+        len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &msg[i].num_stages, 1);
+        if (len < 0) return len; else pos += len;
+
+        len = __string_decode_array(buf, offset + pos, maxlen - pos, &msg[i].task_name, 1);
+        if (len < 0) return len; else pos += len;
+
+        len = __tmsg_stage_t_decode_array(buf, offset + pos, maxlen - pos, msg[i].stages, msg[i].num_stages);
+        if (len < 0) return len; else pos += len;
+    }
+
+    return pos;
+}
+
+/******************************************************
+ *              ENCODE DECODE FUNCTIONS               *
+ ******************************************************/
+uint32_t umsg_rc_t_encoded_sz (const umsg_rc_t *msg) {
+    return 8 + __umsg_rc_t_encoded_sz(msg);
+}
+
+int32_t umsg_rc_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const umsg_rc_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __umsg_rc_t_encode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t umsg_rc_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, umsg_rc_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __umsg_rc_t_decode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+uint32_t smsg_conn_t_encoded_sz (const smsg_conn_t *msg) {
+    return 8 + __smsg_conn_t_encoded_sz(msg);
+}
+
+int32_t smsg_conn_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const smsg_conn_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __smsg_conn_t_encode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
 int32_t smsg_conn_t_decode(const void* buf, uint32_t offset, uint32_t maxlen, smsg_conn_t* msg) {
     uint32_t    pos = 0;
     int32_t     len;
@@ -869,6 +1061,123 @@ int32_t smsg_conn_t_decode(const void* buf, uint32_t offset, uint32_t maxlen, sm
     if (len < 0) return len; else pos += len;
 
     return pos;
+}
+
+int32_t tmsg_file_t_encoded_sz (const tmsg_file_t *msg) {
+    return 8 + __tmsg_file_t_encoded_sz(msg);
+}
+
+int32_t tmsg_file_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const tmsg_file_t *msg) {
+    uint32_t     pos = 0;
+    int32_t     len;
+
+    len = __tmsg_file_t_encode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t tmsg_file_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, tmsg_file_t *msg) {
+    uint32_t     pos = 0;
+    int32_t     len;
+
+    len = __tmsg_file_t_decode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t tmsg_stage_t_encoded_sz(const tmsg_stage_t *msg) {
+    return 8 + __tmsg_stage_t_encoded_array_sz(msg, 1);
+}
+
+int32_t tmsg_stage_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const tmsg_stage_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __tmsg_stage_t_encode_array(buf, offset + pos, maxlen - pos, msg, 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t tmsg_stage_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, tmsg_stage_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __tmsg_stage_t_decode_array(buf, offset + pos, maxlen - pos, msg, 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t tmsg_args_t_encoded_sz(const tmsg_args_t *msg) {
+    return 8 + __tmsg_args_t_encoded_array_sz(msg, 1);
+}
+
+int32_t tmsg_args_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const tmsg_args_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __tmsg_args_t_encode_array(buf, offset + pos, maxlen - pos, msg, 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t tmsg_args_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, tmsg_args_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __tmsg_args_t_decode_array(buf, offset + pos, maxlen - pos, msg, 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t send_task_file (const char *filename, int32_t sockfd, int32_t flag) {
+    int32_t     rc;
+    FILE        *fp = fopen(filename, "rb");
+    size_t      len = fsize(fp);
+    size_t      curr = ftell(fp);
+    int32_t     seq = 1;
+
+    while (curr < len) {
+        int32_t     r = (len - curr);
+        int32_t     n = (r < MAX_BUF_SZ) ? r : MAX_BUF_SZ;
+        message_t   msg;
+
+        memset(&msg, 0, sizeof(msg));
+
+        if (1 != (rc = fread(msg.buf, n, 1, fp))) {
+            avd_log_error("Expected : %d | Actual : %d", n, sizeof(msg.buf));
+            goto bail;
+        }
+
+        if (n == MAX_BUF_SZ) {
+            set_msg_type(msg.hdr.type, flag);
+        } else {
+            set_msg_type(msg.hdr.type, (flag << 1));
+        }
+
+        msg.hdr.seq_no = seq++;
+        msg.hdr.size = MSG_HDR_SZ + n;
+
+        curr = ftell(fp);
+
+        rc = send(sockfd, &msg, msg.hdr.size, 0);
+        avd_log_info("Bytes send %d, expected %d", rc, msg.hdr.size);
+        if (rc < 0) {
+            avd_log_error("Error sending the files: %s", strerror(errno));
+            goto bail;
+        }
+
+    }
+
+    return 0;
+
+bail:
+    return -1;
 }
 
 #endif

@@ -83,27 +83,23 @@
 
 #define CLIENT_TYPE(type) ((type == USER) ? "User" : "Worker") 
 
-#define MAX_BUF_SZ          2048
-#define MAX_CHUNK_SZ        256
-#define MAX_FILE_NAME_SZ    50
+#define MAX_FILE_NAME_SZ        100
+#define MAX_TASK_NAME_SZ        10
+#define MAX_STAGE_FUNC_NAME_SZ  50
 
 typedef void (sigfunc)(int);
 
+typedef struct log_info_s {
+    char        log_file[MAX_FILE_NAME_SZ];
+    int32_t     level;
+    int32_t     quiet;
+} __attribute__ ((packed)) log_info_t;
+
 typedef struct conn_info_s {
-    uint16_t            port;
-    int32_t             sockfd;
-    char                ip_addr_s[INET_ADDRSTRLEN];
+    uint16_t    port;
+    int32_t     sockfd;
+    char        ip_addr_s[INET_ADDRSTRLEN];
 } __attribute__((packed)) conn_info_t;
-
-// TODO
-typedef struct input_s {
-    char    *input;
-} __attribute__((packed)) input_t;
-
-// TODO
-typedef struct result_s {
-    int result;
-} __attribute__((packed)) result_t;
 
 // TODO
 typedef struct peer_s {
@@ -114,19 +110,22 @@ typedef struct worker_s {
     int32_t         id;
     int32_t         poll_id;
     peer_t          peers[2];
+    log_info_t      logger;
     conn_info_t     conn;
 } __attribute__((packed)) worker_t;
 
 typedef struct stage_s {
-    int32_t     id;
+    int32_t     num;
+    char        func_name[MAX_STAGE_FUNC_NAME_SZ];
     worker_t    worker;
-    input_t     input;
-    result_t    result;
 } __attribute__((packed)) stage_t;
 
 typedef struct task_s {
     int32_t     id;
+    char        name[MAX_TASK_NAME_SZ];
     int32_t     num_stages;
+    char        filename[MAX_FILE_NAME_SZ];
+    char        input_file[MAX_FILE_NAME_SZ];
     stage_t     stages[MAX_STAGES];
 } __attribute__((packed)) task_t;
 
@@ -134,7 +133,9 @@ typedef struct user_s {
     int32_t         id;
     int32_t         poll_id;
     int32_t         num_tasks;
+    int32_t         file_seq_no;
     task_t          tasks[MAX_TASK];
+    log_info_t      logger;
     conn_info_t     conn;
 } __attribute__((packed)) user_t;
 
@@ -144,8 +145,9 @@ typedef struct server_s {
     int32_t             new_client_id;
     int32_t             max_poll_sz;
     int32_t             curr_poll_sz;
-    struct pollfd       poller[MAX_POLLER_SZ];
+    log_info_t          logger;
     conn_info_t         conn;
+    struct pollfd       poller[MAX_POLLER_SZ];
     union {
         user_t          users[MAX_USER];
         worker_t        workers[MAX_WORKER];
@@ -168,14 +170,6 @@ typedef struct server_conf_s {
     int32_t     log_quiet;
 } __attribute__((packed)) server_conf_t;
 
-typedef struct user_conf_s {
-    uint16_t    port;
-    char        addr[INET_ADDRSTRLEN];
-    char        log_file[MAX_FILE_NAME_SZ];
-    int32_t     log_level;
-    int32_t     log_quiet;
-} __attribute__((packed)) user_conf_t;
-
 typedef struct worker_conf_s {
     uint16_t    port;
     char        addr[INET_ADDRSTRLEN];
@@ -188,7 +182,6 @@ typedef struct conf_parse_info_s {
     int8_t      type;
     union {
         server_conf_t   sconf;
-        user_conf_t     uconf;
         worker_conf_t   wconf;
     };
 } __attribute__((packed)) conf_parse_info_t;
@@ -232,8 +225,7 @@ char * sock_ntop (const struct sockaddr *sa) {
 }
 
 char * sock_ntop_addr (const struct sockaddr *sa) {
-    static char     str[128];
-
+    static char         str[128];
     struct sockaddr_in  *sin = (struct sockaddr_in *) sa;
 
     if (inet_ntop(AF_INET, &sin->sin_addr, str, sizeof(str)) == NULL)
@@ -418,49 +410,149 @@ static int32_t parse_srvr_cfg (cJSON *obj, conf_parse_info_t *cfg) {
     return 0;
 }
 
-static int32_t parse_user_cfg (cJSON *obj, conf_parse_info_t *cfg) {
-    cJSON   *v, *tobj;
+static int32_t parse_user_cfg (cJSON *obj, user_t *user) {
+    int32_t     i, j;
+    int32_t     tobj_arr_sz,  sobj_arr_sz;
+    cJSON   *v, *uobj, *tobj_arr, *tobj, *sobj_arr, *sobj;
 
-    tobj = cJSON_GetObjectItem(obj, "user");
-    if (!tobj) {
+    uobj = cJSON_GetObjectItem(obj, "user");
+    if (!uobj) {
         return -1;
     }
 
-    v = cJSON_GetObjectItem(tobj, "log_file");
+    v = cJSON_GetObjectItem(uobj, "log_file");
     if ((!v) || (!v->valuestring)) {
         avd_log_error("Failed to find 'log_file' in user config");
         return -1;
     }
-    snprintf(cfg->uconf.log_file, strlen(v->valuestring)+1, "%s", v->valuestring);
+    snprintf(user->logger.log_file, strlen(v->valuestring)+1, "%s", v->valuestring);
 
-    v = cJSON_GetObjectItem(tobj, "log_level");
+    v = cJSON_GetObjectItem(uobj, "log_level");
     if (!v) {
         avd_log_error("Failed to find 'log_level' in user config");
         return -1;
     }
-    cfg->uconf.log_level = v->valueint;
+    user->logger.level = v->valueint;
 
-    v = cJSON_GetObjectItem(tobj, "log_quiet");
+    v = cJSON_GetObjectItem(uobj, "log_quiet");
     if (!v) {
         avd_log_error("Failed to find 'log_quiet' in user config");
         return -1;
     }
-    cfg->uconf.log_quiet = v->valueint;
+    user->logger.quiet = v->valueint;
 
-    v = cJSON_GetObjectItem(tobj, "srvr_port");
-    if (!v) {
-        avd_log_error("Failed to find 'srvr_port' in user config");
-        return -1;
-    }
-    cfg->uconf.port = v->valueint;
-
-    v = cJSON_GetObjectItem(tobj, "srvr_addr");
+    v = cJSON_GetObjectItem(uobj, "srvr_addr");
     if ((!v) || (!v->valuestring)) {
         avd_log_error("Failed to find 'srvr_addr' in user config");
         return -1;
     }
-    snprintf(cfg->uconf.addr, strlen(v->valuestring)+1, "%s", v->valuestring);
+    snprintf(user->conn.ip_addr_s, strlen(v->valuestring)+1, "%s", v->valuestring);
 
+    v = cJSON_GetObjectItem(uobj, "srvr_port");
+    if (!v) {
+        avd_log_error("Failed to find 'srvr_port' in user config");
+        return -1;
+    }
+    user->conn.port = v->valueint;
+
+    v = cJSON_GetObjectItem(uobj, "num_tasks");
+    if (!v) {
+        avd_log_error("Failed to find 'num_tasks' in user config");
+        return -1;
+    }
+    user->num_tasks = v->valueint;
+
+    tobj_arr = cJSON_GetObjectItem(uobj, "tasks");
+    if (!tobj_arr) {
+        avd_log_error("Failed to find 'tasks' in user config");
+        return -1;
+    }
+
+    tobj_arr_sz = cJSON_GetArraySize(tobj_arr);
+
+    if (tobj_arr_sz > MAX_TASK) {
+        avd_log_error("Number of tasks on config file exceeds maximum limit of %d", MAX_TASK);
+        return -1;
+    }
+
+    for (i = 0; i < tobj_arr_sz; i++) {
+        tobj = cJSON_GetArrayItem(tobj_arr, i);
+        if (!tobj) {
+            avd_log_error("Failed to get task %d from task array in user config", i);
+            return -1;
+        }
+
+#define task user->tasks[i]
+
+        v = cJSON_GetObjectItem(tobj, "name");
+        if ((!v) || (!v->valuestring)) {
+            avd_log_error("Failed to find 'name' in task %d config", i);
+            return -1;
+        }
+        snprintf(task.name, strlen(v->valuestring)+1, "%s", v->valuestring);
+
+        v = cJSON_GetObjectItem(tobj, "num_stages");
+        if ((!v) || (!v->valueint)) {
+            avd_log_error("Failed to find 'num_stages' in task %d config", i);
+            return -1;
+        }
+        task.num_stages = v->valueint;
+
+        v = cJSON_GetObjectItem(tobj, "file");
+        if ((!v) || (!v->valuestring)) {
+            avd_log_error("Failed to find 'file' in task %d config", i);
+            return -1;
+        }
+        snprintf(task.filename, strlen(v->valuestring)+1, "%s", v->valuestring);
+
+        v = cJSON_GetObjectItem(tobj, "input");
+        if ((!v) || (!v->valuestring)) {
+            avd_log_error("Failed to find 'input' in task %d config", i);
+            return -1;
+        }
+        snprintf(task.input_file, strlen(v->valuestring)+1, "%s", v->valuestring);
+
+        sobj_arr = cJSON_GetObjectItem(tobj, "stages");
+        if (!sobj_arr) {
+            avd_log_error("Failed to find 'stages' in task %d config", i);
+            return -1;
+        }
+
+        sobj_arr_sz = cJSON_GetArraySize(sobj_arr);
+
+        if (sobj_arr_sz > MAX_STAGES) {
+            avd_log_error("Number of stages of task %d exceeds maximum limit of %d",
+                          i, MAX_STAGES);
+            return -1;
+        }
+
+        for (j = 0; j < sobj_arr_sz; j++) {
+            sobj = cJSON_GetArrayItem(sobj_arr, j);
+            if (!sobj) {
+                avd_log_error("Failed to get stage %d from task %d in config file", j, i);
+                return -1;
+            }
+
+#define stage task.stages[j]
+
+            v = cJSON_GetObjectItem(sobj, "num");
+            if ((!v) || (!v->valueint)) {
+                avd_log_error("Failed to find 'num_stages' in task %d config", i);
+                return -1;
+            }
+            stage.num = v->valueint;
+
+            v = cJSON_GetObjectItem(sobj, "func");
+            if ((!v) || (!v->valuestring)) {
+                avd_log_error("Failed to find 'file' in task %d config", i);
+                return -1;
+            }
+            snprintf(stage.func_name, strlen(v->valuestring)+1, "%s", v->valuestring);
+
+#undef stage
+        }
+#undef task
+    }
     return 0;
 }
 
@@ -510,7 +602,7 @@ static int32_t parse_wrkr_cfg (cJSON *obj, conf_parse_info_t *cfg) {
     return 0;
 }
 
-int32_t process_config_file (char *fname, conf_parse_info_t *cfg) {
+int32_t process_config_file (char *fname, int32_t type, void *cfg) {
     cJSON       *json_obj = NULL;
     int32_t     rc = -1;
 
@@ -519,7 +611,7 @@ int32_t process_config_file (char *fname, conf_parse_info_t *cfg) {
         goto bail;
     }
 
-    switch (cfg->type) {
+    switch (type) {
         case SERVER:
             rc = parse_srvr_cfg(json_obj, cfg);
             break;

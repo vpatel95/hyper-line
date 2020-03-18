@@ -3,8 +3,66 @@
 #include "avd_session.h"
 #include "avd_message.h"
 
+bool                        g_task_sent = false;
 char                        *g_conf_file_name = NULL;
 extern avd_user_session_t   g_user_session;
+
+int32_t send_tasks(user_t *user) {
+    int32_t     i, j, rc;
+    int32_t     num_tasks = user->num_tasks;
+    conn_info_t *conn = &user->conn;
+
+    for (i = 0; i < num_tasks; i++) {
+#define task user->tasks[i]
+
+        int32_t     tmsg_sz;
+        message_t   msg;
+        tmsg_args_t tmsg;
+
+        memset(&msg, 0, sizeof(msg));
+
+        tmsg.task_name = (char *)malloc(strlen(task.name));
+        tmsg.num_stages = task.num_stages;
+        snprintf(tmsg.task_name, strlen(task.name), "%s", task.name);
+
+        for (j = 0; j < task.num_stages; j++) {
+#define stage task.stages[j]
+            tmsg.stages[j].num = stage.num;
+            tmsg.stages[j].func = (char *)malloc(strlen(stage.func_name));
+            snprintf(tmsg.stages[j].func, strlen(stage.func_name), "%s", stage.func_name);
+#undef stage
+        }
+
+        tmsg_sz = tmsg_args_t_encoded_sz(&tmsg);
+        tmsg_args_t_encode(msg.buf, 0, tmsg_sz, &tmsg);
+
+        set_msg_type(msg.hdr.type, AVD_MSG_F_TASK);
+        msg.hdr.size = msg_sz(tmsg);
+        msg.hdr.seq_no = 1;
+
+        rc = send(conn->sockfd, &msg, msg.hdr.size, 0);
+        if (rc < 0) {
+            avd_log_error("Task send error: %s", strerror(errno));
+            goto bail;
+        }
+
+        if (0 != (send_task_file(task.filename, conn->sockfd, AVD_MSG_F_FILE_TSK))) {
+            avd_log_error("Failed to send task files to the server");
+            goto bail;
+        }
+
+        if (0 != (send_task_file(task.input_file, conn->sockfd, AVD_MSG_F_FILE_IN))) {
+            avd_log_error("Failed to send task files to the server");
+            goto bail;
+        }
+#undef task
+    }
+
+    return 0;
+
+bail:
+    return -1;
+}
 
 int32_t user_init () {
     int32_t     conn_fd;
@@ -20,10 +78,23 @@ int32_t user_init () {
 }
 
 /* TODO: Add Multiplexing I/O in server communication */
-void server_communication (conn_info_t *conn) {
-    message_t   rmsg;
+void server_communication (user_t *user) {
+    int32_t         rc;
+    message_t       rmsg;
+    conn_info_t     *conn = &user->conn;
 
     memset(&rmsg, 0, sizeof(rmsg));
+
+    if (!g_task_sent) {
+        avd_log_debug("In server_communication, before send_task");
+        if (0 != (rc = send_tasks(user))) {
+            avd_log_error("Error sending tasks to the server");
+            // TODO : Handle the error and do not exit
+            exit(1);
+        }
+        avd_log_debug("In server_communication, after send_task");
+        g_task_sent = true;
+    }
 
 #define sockfd conn->sockfd
     if (sockfd < 0)
@@ -190,7 +261,6 @@ bail:
 
 int32_t start_user (user_t *user) {
     int32_t         rc = -1;
-    conn_info_t     *conn = &user->conn;
 
     rc = connect_server(user);
     if (rc < 0) {
@@ -199,44 +269,37 @@ int32_t start_user (user_t *user) {
     }
 
     while(true) {
-        server_communication(conn);
+        server_communication(user);
     }
 bail:
     return rc;
 }
 
-void setup_logger(char *log_file, int32_t level, int32_t quiet) {
-    set_log_file(log_file);
-    set_log_level(level);
-    set_log_quiet(quiet);
+void setup_logger(log_info_t *logger) {
+    set_log_file(logger->log_file);
+    set_log_level(logger->level);
+    set_log_quiet(logger->quiet);
 }
 
 int32_t main (int32_t argc, char *argv[]) {
 
     user_t              user;
-    conn_info_t         *conn = &user.conn;
-    conf_parse_info_t   cfg;
 
     signal_intr(SIGINT, sig_int_handler);
 
     memset(&user, 0, sizeof(user));
-    memset(&cfg, 0, sizeof(cfg));
 
-    cfg.type = USER;
     g_conf_file_name = (char *)argv[1];
 
     if (argc < 2)
         exit(EXIT_FAILURE);
 
-    if (0 != process_config_file(g_conf_file_name, &cfg)) {
+    if (0 != process_config_file(g_conf_file_name, USER, &user)) {
         avd_log_fatal("Failed to parse config file %s\n", argv[1]);
         exit(EXIT_FAILURE);
     }
 
-    setup_logger(cfg.uconf.log_file, cfg.uconf.log_level, cfg.uconf.log_quiet);
-
-    snprintf(conn->ip_addr_s, INET_ADDRSTRLEN, "%s", cfg.uconf.addr);
-    conn->port = cfg.uconf.port;
+    setup_logger(&user.logger);
 
     start_user(&user);
     return EXIT_SUCCESS;

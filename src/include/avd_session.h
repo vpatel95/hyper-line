@@ -286,7 +286,6 @@ int32_t create_user_u_session(user_t *user) {
     FILE                    *fp = NULL;
     cJSON                   *u_id = NULL;
     cJSON                   *poll_id = NULL;
-    cJSON                   *tasks = NULL;
     avd_user_session_t    *sess = (avd_user_session_t *)&g_user_session;
 
     if (file_exists(SESSION_FILE, F_OK)) {
@@ -301,12 +300,8 @@ int32_t create_user_u_session(user_t *user) {
         poll_id = cJSON_CreateNumber(user->poll_id);
         if (!u_id) goto bail;
 
-        tasks = cJSON_CreateArray();
-        if (!tasks) goto bail;
-
         cJSON_AddItemToObject(sess->root, "id", u_id);
         cJSON_AddItemToObject(sess->root, "poll_id", poll_id);
-        cJSON_AddItemToObject(sess->root, "tasks", tasks);
     }
 
     sess_str = cJSON_Print(sess->root);
@@ -332,11 +327,8 @@ bail:
 }
 
 int32_t retrieve_user_u_session (user_t *user) {
-    int32_t     i, j;
     cJSON       *obj = NULL;
     cJSON       *v = NULL;
-    cJSON       *tobj = NULL;
-    cJSON       *sobj = NULL;
     int32_t     rc = -1;
 
     if (NULL == (obj = parse_json(SESSION_FILE))) {
@@ -357,58 +349,6 @@ int32_t retrieve_user_u_session (user_t *user) {
         goto bail;
     }
     user->poll_id = v->valueint;
-
-    tobj = cJSON_GetObjectItem(obj, "tasks");
-    if (!tobj) {
-        goto bail;
-    }
-
-    for (i = 0; i < cJSON_GetArraySize(tobj); i++) {
-#define task user->tasks[i]
-        cJSON *t = cJSON_GetArrayItem(tobj, i);
-
-        v = cJSON_GetObjectItem(t, "id");
-        if ((!v) || (!v->valueint)) {
-            avd_log_error("Failed to find 'id' in 'tasks' object in session file");
-            goto bail;
-        }
-        task.id = v->valueint;
-
-        v = cJSON_GetObjectItem(t, "num_stages");
-        if ((!v) || (!v->valueint)) {
-            avd_log_error("Failed to find 'num_stages' in 'tasks' object in session file");
-            goto bail;
-        }
-        task.num_stages = v->valueint;
-
-        sobj = cJSON_GetObjectItem(t, "stages");
-        if (!sobj) {
-            goto bail;
-        }
-
-        for (j = 0; j < cJSON_GetArraySize(sobj); j++) {
-#define stage task.stages[j]
-#define wrkr stage.worker
-            cJSON *s = cJSON_GetArrayItem(sobj, j);
-
-            v = cJSON_GetObjectItem(s, "id");
-            if ((!v) || (!v->valueint)) {
-                avd_log_error("Failed to find 'id' in 'stages' object in session file");
-                goto bail;
-            }
-            stage.id = v->valueint;
-
-            v = cJSON_GetObjectItem(s, "w_id");
-            if ((!v) || (!v->valueint)) {
-                avd_log_error("Failed to find 'w_id' in 'stages' object in session file");
-                goto bail;
-            }
-            wrkr.id = v->valueint;
-#undef wrkr
-#undef stage
-        }
-#undef task
-    }
 
     rc = 0;
 

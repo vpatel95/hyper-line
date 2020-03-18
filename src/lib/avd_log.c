@@ -37,7 +37,7 @@ void set_log_quiet(int32_t quiet) {
     avd_logger.quiet = quiet ? 1 : 0;
 }
 
-void avd_log (int32_t level, const char *fmt, ...) {
+void avd_log (int32_t level, const char *file, int32_t line, const char *fmt, ...) {
     if (level < avd_logger.level || (avd_logger.quiet && !avd_logger.fp)) {
         return;
     }
@@ -53,7 +53,7 @@ void avd_log (int32_t level, const char *fmt, ...) {
 
         buf[strftime(buf, sizeof(buf), "%H:%M:%S", local_time)] = '\0';
 
-        fprintf(stderr, "[%s][%s] ::: ", buf, level_tags[level]);
+        fprintf(stderr, "[%s][%s][%s][%d] ::: ", buf, level_tags[level], file, line);
 
         va_start(args, fmt);
         vfprintf(stderr, fmt, args);
@@ -68,7 +68,7 @@ void avd_log (int32_t level, const char *fmt, ...) {
 
         buf[strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", local_time)] = '\0';
 
-        fprintf(avd_logger.fp, "[%s][%s] ::: ", buf, level_tags[level]);
+        fprintf(avd_logger.fp, "[%s][%s][%s][%d] ::: ", buf, level_tags[level], file, line);
 
         va_start(args, fmt);
         vfprintf(avd_logger.fp, fmt, args);

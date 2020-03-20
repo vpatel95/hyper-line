@@ -95,7 +95,7 @@ void close_worker_connection(server_t *srvr, int32_t worker_idx) {
     srvr->n_clients--;
     close(worker->conn.sockfd);
     srvr->poller[worker->poll_id].fd = -1;
-    remove_user_s_session(worker->id);
+    remove_user_s_sess(worker->id);
     memset(worker, 0, sizeof(worker_t));
 }
 
@@ -181,13 +181,12 @@ void close_user_connection(server_t *srvr, int32_t sockfd,
 
 }
 
-int32_t process_user_message(server_t *srvr, int32_t sockfd,
+int32_t process_user_msg(server_t *srvr, int32_t sockfd,
                         message_t *msg, int32_t user_idx) {
 
     int32_t     i, j, rc = -1;
     size_t      sz;
     size_t      smsg_sz;
-    FILE        *fp;
     message_t   res;
     user_t      *user = &srvr->users[user_idx];
 
@@ -197,7 +196,8 @@ int32_t process_user_message(server_t *srvr, int32_t sockfd,
             msg->hdr.type, msg->hdr.size);
 
     switch (msg->hdr.type) {
-        case AVD_MSG_F_NEW_CON:
+        case AVD_MSG_F_NEW_CON: {
+            char        *dir = NULL;
             if (0 < (sz = msg->hdr.size - MSG_HDR_SZ)) {
                 rc = recv_avd_msg(sockfd, msg->buf, sz);
                 if (0 > rc) {
@@ -205,7 +205,7 @@ int32_t process_user_message(server_t *srvr, int32_t sockfd,
                 }
             }
 
-            if (0 > (rc = create_user_s_session(srvr, user_idx))) {
+            if (0 > (rc = add_user_s_sess(srvr, user_idx))) {
                 return rc;
             }
 
@@ -220,6 +220,14 @@ int32_t process_user_message(server_t *srvr, int32_t sockfd,
             smsg_conn_t_encode(res.buf, 0, smsg_sz, &nc_smsg);
             res.hdr.size = msg_sz(smsg_conn_t);
 
+            if (NULL == (dir = get_or_create_user_dir(user->id))) {
+                avd_log_error("Failed to create the task directory");
+                //TODO handle the error
+                return -1;
+            }
+
+            user->dir = dir;
+
             rc = send(sockfd, &res, res.hdr.size, 0);
             if (rc < 0) {
                 rc = -errno;
@@ -228,7 +236,9 @@ int32_t process_user_message(server_t *srvr, int32_t sockfd,
             }
 
             break;
-        case AVD_MSG_F_RE_CON:
+        }
+        case AVD_MSG_F_RE_CON: {
+            char        *dir = NULL;
             if (0 < (sz = msg->hdr.size - MSG_HDR_SZ)) {
                 rc = recv_avd_msg(sockfd, msg->buf, sz);
                 if (0 > rc) {
@@ -241,13 +251,13 @@ int32_t process_user_message(server_t *srvr, int32_t sockfd,
 
             avd_log_debug("RCON Msg ::: Uid : %d | Size : %ld", m.uid, sz);
 
-            if (!user_s_session_exists(m.uid)) {
+            if (!user_exists_s_sess(m.uid)) {
                 avd_log_error("Failed to find user session with reconnect id %d", m.uid);
                 return -1;
             }
 
             user->id = m.uid;
-            update_user_s_session(m.uid, "poll_id", cJSON_CreateNumber(user->poll_id));
+            update_user_s_sess(m.uid, "poll_id", cJSON_CreateNumber(user->poll_id));
 
             set_msg_type(res.hdr.type, AVD_MSG_F_RE_CON);
             res.hdr.seq_no = 1;
@@ -260,6 +270,14 @@ int32_t process_user_message(server_t *srvr, int32_t sockfd,
             smsg_conn_t_encode(res.buf, 0, smsg_sz, &rc_smsg);
             res.hdr.size = msg_sz(smsg_conn_t);
 
+            if (NULL == (dir = get_or_create_user_dir(user->id))) {
+                avd_log_error("Failed to create the task directory");
+                //TODO handle the error
+                return -1;
+            }
+
+            user->dir = dir;
+
             rc = send(sockfd, &res, res.hdr.size, 0);
             if (rc < 0) {
                 rc = -errno;
@@ -268,7 +286,8 @@ int32_t process_user_message(server_t *srvr, int32_t sockfd,
             }
 
             break;
-        case AVD_MSG_F_TASK:
+        }
+        case AVD_MSG_F_TASK: {
             if (0 < (sz = msg->hdr.size - MSG_HDR_SZ)) {
                 rc = recv_avd_msg(sockfd, msg->buf, sz);
                 if (0 > rc) {
@@ -292,20 +311,47 @@ int32_t process_user_message(server_t *srvr, int32_t sockfd,
 
             user->tasks[i].id = user->num_tasks + 1;
             user->num_tasks += 1;
+            update_user_s_sess(user->id, "num_tasks", cJSON_CreateNumber(user->num_tasks));
 
 #define task user->tasks[i]
+            cJSON   *new_task =cJSON_CreateObject();
+            cJSON   *stage_arr = cJSON_CreateArray();
+
             snprintf(task.name, MAX_TASK_NAME_SZ, "%s", tmsg.task_name);
+            cJSON_AddItemToObject(new_task, "name", cJSON_CreateString(task.name));
+
+            snprintf(task.filename, MAX_FILE_NAME_SZ, "%s/user%d/%s", APP_ROOT, user->id, TASK_FILE);
+            cJSON_AddItemToObject(new_task, "bin_file", cJSON_CreateString(task.filename));
+
+            snprintf(task.input_file, MAX_FILE_NAME_SZ, "%s/user%d/%s", APP_ROOT, user->id, INPUT_FILE );
+            cJSON_AddItemToObject(new_task, "input_file", cJSON_CreateString(task.input_file));
+
             task.num_stages = tmsg.num_stages;
+            cJSON_AddItemToObject(new_task, "num_stages", cJSON_CreateNumber(task.num_stages));
 
             for (j = 0; j < task.num_stages; j++) {
-                task.stages[j].num = tmsg.stages[j].num;
-                snprintf(task.stages[j].func_name, MAX_STAGE_FUNC_NAME_SZ,
-                         "%s", tmsg.stages[j].func);
+#define stage task.stages[j]
+                cJSON   *stg = cJSON_CreateObject();
+
+                stage.num = tmsg.stages[j].num;
+                cJSON_AddItemToObject(stg, "num", cJSON_CreateNumber(stage.num));
+
+                snprintf(stage.func_name, MAX_STAGE_FUNC_NAME_SZ, "%s", tmsg.stages[j].func);
+                cJSON_AddItemToObject(stg, "func", cJSON_CreateString(stage.func_name));
+
+                cJSON_AddItemToArray(stage_arr, stg);
+#undef stage
             }
+
+            add_user_task_s_sess(user->id, new_task);
 #undef task
             break;
+        }
         case AVD_MSG_F_FILE_TSK:
-        case AVD_MSG_F_FILE_TSK_FIN:
+        case AVD_MSG_F_FILE_TSK_FIN: {
+            char        file[MAX_FILE_NAME_SZ];
+            FILE        *fp;
+
             if (user->file_seq_no != msg->hdr.seq_no) {
                 avd_log_error("Out of order message. Expecting seq %d, Received %d",
                         user->file_seq_no, msg->hdr.seq_no);
@@ -319,7 +365,9 @@ int32_t process_user_message(server_t *srvr, int32_t sockfd,
                 }
             }
 
-            fp = fopen(TASK_FILE, "ab+");
+            snprintf(file, MAX_FILE_NAME_SZ, "%s/%s", user->dir, TASK_FILE);
+
+            fp = fopen(file, "ab+");
 
             if (user->file_seq_no == 1) {
                 fseek(fp, 0L, SEEK_SET);
@@ -328,13 +376,14 @@ int32_t process_user_message(server_t *srvr, int32_t sockfd,
             fwrite(msg->buf, rc, 1, fp);
 
             if (is_msg_type(msg->hdr.type, AVD_MSG_F_FILE_TSK_FIN)) {
-                if(chmod(TASK_FILE, S_IRUSR | S_IWUSR | S_IXUSR
+                if(chmod(file, S_IRUSR | S_IWUSR | S_IXUSR
                          | S_IXGRP | S_IRGRP | S_IWGRP | S_IXOTH
                          | S_IROTH | S_IWOTH) != 0) {
-                    avd_log_error("Error changing file mode to executable for file %s", TASK_FILE);
+                    avd_log_error("Error changing file mode to executable for file %s", file);
                     return -1;
                 }
                 user->file_seq_no = 1;
+                avd_log_info("Created Task file : %s", file);
             } else {
                 user->file_seq_no += 1;
             }
@@ -342,8 +391,12 @@ int32_t process_user_message(server_t *srvr, int32_t sockfd,
             fclose(fp);
 
             break;
+        }
         case AVD_MSG_F_FILE_IN:
-        case AVD_MSG_F_FILE_IN_FIN:
+        case AVD_MSG_F_FILE_IN_FIN: {
+            char        file[MAX_FILE_NAME_SZ];
+            FILE        *fp;
+
             if (user->file_seq_no != msg->hdr.seq_no) {
                 avd_log_error("Out of order message. Expecting seq %d, Received %d",
                         user->file_seq_no, msg->hdr.seq_no);
@@ -357,7 +410,9 @@ int32_t process_user_message(server_t *srvr, int32_t sockfd,
                 }
             }
 
-            fp = fopen(INPUT_FILE, "ab+");
+            snprintf(file, MAX_FILE_NAME_SZ, "%s/%s", user->dir, INPUT_FILE);
+
+            fp = fopen(file, "ab+");
 
             if (user->file_seq_no == 1) {
                 fseek(fp, 0L, SEEK_SET);
@@ -367,6 +422,7 @@ int32_t process_user_message(server_t *srvr, int32_t sockfd,
 
             if (is_msg_type(msg->hdr.type, AVD_MSG_F_FILE_IN_FIN)) {
                 user->file_seq_no = 1;
+                avd_log_info("Created Input file : %s", file);
             } else {
                 user->file_seq_no += 1;
             }
@@ -374,8 +430,12 @@ int32_t process_user_message(server_t *srvr, int32_t sockfd,
             fclose(fp);
 
             break;
+        }
         case AVD_MSG_F_FILE_OUT:
-        case AVD_MSG_F_FILE_OUT_FIN:
+        case AVD_MSG_F_FILE_OUT_FIN: {
+            FILE        *fp;
+            char        file[MAX_FILE_NAME_SZ];
+
             if (user->file_seq_no != msg->hdr.seq_no) {
                 avd_log_error("Out of order message. Expecting seq %d, Received %d",
                         user->file_seq_no, msg->hdr.seq_no);
@@ -389,7 +449,9 @@ int32_t process_user_message(server_t *srvr, int32_t sockfd,
                 }
             }
 
-            fp = fopen(OUTPUT_FILE, "ab+");
+            snprintf(file, MAX_FILE_NAME_SZ, "%s/%s", user->dir, OUTPUT_FILE);
+
+            fp = fopen(file, "ab+");
 
             if (user->file_seq_no == 1) {
                 fseek(fp, 0L, SEEK_SET);
@@ -399,6 +461,7 @@ int32_t process_user_message(server_t *srvr, int32_t sockfd,
 
             if (is_msg_type(msg->hdr.type, AVD_MSG_F_FILE_OUT_FIN)) {
                 user->file_seq_no = 1;
+                avd_log_info("Created Output file : %s", file);
             } else {
                 user->file_seq_no += 1;
             }
@@ -406,10 +469,12 @@ int32_t process_user_message(server_t *srvr, int32_t sockfd,
             fclose(fp);
 
             break;
-        case AVD_MSG_F_CLOSE:
-            remove_user_s_session(user->id);
+        }
+        case AVD_MSG_F_CLOSE: {
+            remove_user_s_sess(user->id);
             close_user_connection(srvr, sockfd, user->poll_id, user_idx);
             break;
+        }
         case AVD_MSG_F_CTRL:
             break;
         default:
@@ -442,7 +507,7 @@ void user_communications(server_t *srvr, int *nready) {
             }
 
             if (0 < recv_avd_hdr(sockfd, &rmsg.hdr)) {
-                if (0 > (rc = process_user_message(srvr, sockfd, &rmsg, user_idx))) {
+                if (0 > (rc = process_user_msg(srvr, sockfd, &rmsg, user_idx))) {
                     avd_log_error("Error receiving message");
                     close_user_connection(srvr, sockfd, i, user_idx);
                 }
@@ -576,6 +641,7 @@ int32_t connect_user(server_t *srvr) {
                 user_poll[i].fd = user_fd;
                 user_poll[i].events = POLLRDNORM;
 
+                user->file_seq_no = 1;
                 user->conn.sockfd = user_fd;
                 user->poll_id = i;
                 user->conn.port = sock_ntop_port((struct sockaddr *)&user_addr);
@@ -585,7 +651,7 @@ int32_t connect_user(server_t *srvr) {
                 srvr->n_clients += 1;
 
                 avd_log_info("New User connected: %s", sock_ntop((struct sockaddr *)&user_addr));
-                avd_log_fatal("\tUser Info:\n\t\tsockfd : %d\n\t\tpoll_id : %d", user->conn.sockfd, user->poll_id);
+                avd_log_debug("\tUser Info:\n\t\tsockfd : %d\n\t\tpoll_id : %d", user->conn.sockfd, user->poll_id);
                 break;
             }
         }
@@ -641,7 +707,7 @@ static void * start_server(void * args) {
 
             srvr->max_poll_sz = MAX_USER_POLL;
             srvr->curr_poll_sz = 0;
-            srvr->new_client_id = 1;
+            srvr->new_client_id = get_max_user_id_s_sess();
 
             __sync_add_and_fetch(&g_start_processing, 1);
 

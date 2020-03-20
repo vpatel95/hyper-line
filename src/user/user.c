@@ -15,15 +15,20 @@ int32_t send_tasks(user_t *user) {
     for (i = 0; i < num_tasks; i++) {
 #define task user->tasks[i]
 
+        if (get_task_sent_u_sess(task.name)) {
+            continue;
+        }
+
         int32_t     tmsg_sz;
         message_t   msg;
         tmsg_args_t tmsg;
 
         memset(&msg, 0, sizeof(msg));
 
-        tmsg.task_name = (char *)malloc(strlen(task.name));
+        tmsg.task_name = (char *)malloc(strlen(task.name)+1);
+
         tmsg.num_stages = task.num_stages;
-        snprintf(tmsg.task_name, strlen(task.name), "%s", task.name);
+        snprintf(tmsg.task_name, strlen(task.name)+1, "%s", task.name);
 
         for (j = 0; j < task.num_stages; j++) {
 #define stage task.stages[j]
@@ -55,6 +60,8 @@ int32_t send_tasks(user_t *user) {
             avd_log_error("Failed to send task files to the server");
             goto bail;
         }
+
+        set_task_sent_u_sess(task.name);
 #undef task
     }
 
@@ -77,7 +84,6 @@ int32_t user_init () {
     return conn_fd;
 }
 
-/* TODO: Add Multiplexing I/O in server communication */
 void server_communication (user_t *user) {
     int32_t         rc;
     message_t       rmsg;
@@ -85,15 +91,10 @@ void server_communication (user_t *user) {
 
     memset(&rmsg, 0, sizeof(rmsg));
 
-    if (!g_task_sent) {
-        avd_log_debug("In server_communication, before send_task");
-        if (0 != (rc = send_tasks(user))) {
-            avd_log_error("Error sending tasks to the server");
-            // TODO : Handle the error and do not exit
-            exit(1);
-        }
-        avd_log_debug("In server_communication, after send_task");
-        g_task_sent = true;
+    if (0 != (rc = send_tasks(user))) {
+        avd_log_error("Error sending tasks to the server");
+        // TODO : Handle the error and do not exit
+        exit(1);
     }
 
 #define sockfd conn->sockfd
@@ -110,7 +111,7 @@ void server_communication (user_t *user) {
 int32_t check_and_get_session(user_t *user) {
     int32_t     rc = -1;
     if (file_exists(SESSION_FILE, F_OK)) {
-        if (0 != (rc = retrieve_user_u_session(user))) {
+        if (0 != (rc = get_user_u_sess(user))) {
             avd_log_fatal("Failed to restore user session");
             exit(EXIT_FAILURE);
         }

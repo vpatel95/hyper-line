@@ -53,10 +53,6 @@
 #define MAX_CHUNK_SZ        256
 #define MAX_STG             3
 
-#define INPUT_FILE      "/opt/avd-pipe/input"
-#define TASK_FILE       "/opt/avd-pipe/task.so"
-#define OUTPUT_FILE     "/opt/avd-pipe/output"
-
 /* Message Header
  *  1. Type : type of message - e.g new user, reconnect etc
  *  2. Seq Number : this will be used in sending chunked messages e.g file transfer
@@ -98,19 +94,6 @@ typedef struct tmsg_args_s {
     char            *task_name;
     tmsg_stage_t    stages[MAX_STG];
 } tmsg_args_t;
-
-static inline FILE * file_from_flag(int32_t flag) {
-    if (flag == AVD_MSG_F_FILE_IN)
-        return fopen(INPUT_FILE, "ab+");
-
-    if (flag == AVD_MSG_F_FILE_OUT)
-        return fopen(OUTPUT_FILE, "ab+");
-
-    if (flag == AVD_MSG_F_FILE_TSK)
-        return fopen(TASK_FILE, "ab+");
-
-    return NULL;
-}
 
 static inline size_t fsize (FILE *f) {
     size_t  c = ftell(f);

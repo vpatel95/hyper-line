@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <libgen.h>
 
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -84,8 +85,14 @@
 #define CLIENT_TYPE(type) ((type == USER) ? "User" : "Worker") 
 
 #define MAX_FILE_NAME_SZ        100
-#define MAX_TASK_NAME_SZ        10
-#define MAX_STAGE_FUNC_NAME_SZ  50
+#define MAX_TASK_NAME_SZ        100
+#define MAX_STAGE_FUNC_NAME_SZ  100
+
+#define APP_ROOT        "/opt/avd-pipe"
+#define INPUT_FILE      "input"
+#define TASK_FILE       "task.so"
+#define OUTPUT_FILE     "output"
+
 
 typedef void (sigfunc)(int);
 
@@ -122,8 +129,9 @@ typedef struct stage_s {
 
 typedef struct task_s {
     int32_t     id;
-    char        name[MAX_TASK_NAME_SZ];
     int32_t     num_stages;
+    bool        task_sent;
+    char        name[MAX_TASK_NAME_SZ];
     char        filename[MAX_FILE_NAME_SZ];
     char        input_file[MAX_FILE_NAME_SZ];
     stage_t     stages[MAX_STAGES];
@@ -134,6 +142,7 @@ typedef struct user_s {
     int32_t         poll_id;
     int32_t         num_tasks;
     int32_t         file_seq_no;
+    char            *dir;
     task_t          tasks[MAX_TASK];
     log_info_t      logger;
     conn_info_t     conn;
@@ -185,6 +194,23 @@ typedef struct conf_parse_info_s {
         worker_conf_t   wconf;
     };
 } __attribute__((packed)) conf_parse_info_t;
+
+char *  get_or_create_user_dir(int32_t uid) {
+    struct stat     st = {0};
+    char            *dir = (char *)malloc(MAX_FILE_NAME_SZ);
+
+    snprintf(dir, MAX_FILE_NAME_SZ, "%s/user%d", APP_ROOT, uid);
+
+    if (0 == stat(dir, &st)) {
+        return dir;
+    }
+
+    if (0 == mkdir(dir, 0700)) {
+        return dir;
+    }
+
+    return NULL;
+}
 
 int32_t get_socket(int32_t family, int32_t type, int32_t protocol) {
 

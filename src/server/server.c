@@ -1,7 +1,11 @@
+#define _GNU_SOURCE
 #include "avd_pipe.h"
 #include "avd_log.h"
 #include "avd_session.h"
 #include "avd_message.h"
+
+#include "server/user.h"
+#include "server/worker.h"
 
 #define num_threads         2
 #define init_processing     0
@@ -11,9 +15,6 @@
 // Global variable definitions
 char                            *g_conf_file_name = NULL;
 uint32_t                        g_start_processing = init_processing;
-int32_t                         g_seq_in = 1;
-int32_t                         g_seq_out = 1;
-int32_t                         g_seq_tsk = 1;
 extern avd_server_session_t     g_srvr_session;
 
 int32_t server_init(conn_info_t *conn, int32_t type) {
@@ -64,616 +65,13 @@ int32_t server_init(conn_info_t *conn, int32_t type) {
         goto bail;
     }
 
-    avd_log_info("%s Server listening on %s:%d\n", CLIENT_TYPE(type),
+    avd_log_info("%s Server listening on %s:%d", CLIENT_TYPE(type),
                   conn->ip_addr_s, conn->port);
 
     return 0;
 
 bail:
     close(conn->sockfd);
-    return rc;
-}
-
-int32_t get_worker_idx_from_sockfd(server_t *srvr, int32_t sockfd) {
-    int32_t     idx;
-    worker_t    *worker;
-    for (idx = 0; idx < srvr->n_clients; idx++) {
-        worker = &srvr->workers[idx];
-        if (worker->conn.sockfd == sockfd) {
-            return idx;
-        }
-    }
-
-    return -1;
-}
-
-void close_worker_connection(server_t *srvr, int32_t worker_idx) {
-    worker_t  *worker = &srvr->workers[worker_idx];
-
-    avd_log_info("Worker connection closed. Worker id : %d", worker->id);
-
-    srvr->n_clients--;
-    close(worker->conn.sockfd);
-    srvr->poller[worker->poll_id].fd = -1;
-    remove_user_s_sess(worker->id);
-    memset(worker, 0, sizeof(worker_t));
-}
-
-// TODO:
-int32_t process_worker_message(server_t *srvr, int32_t sockfd,
-                        message_t *msg, int32_t worker_idx) {
-    (void) (msg);
-    (void) (worker_idx);
-    (void) (srvr);
-    (void) (sockfd);
-    return 0;
-}
-
-void worker_communications(server_t *srvr, int *nready) {
-
-    int32_t         i;
-    int32_t         rc;
-    int32_t         worker_idx;
-    message_t       rmsg;
-
-    memset(&rmsg, 0, sizeof(rmsg));
-
-#define worker srvr->poller
-    for (i = 1; i <= srvr->curr_poll_sz; i++) {
-#define sockfd worker[i].fd
-        if (sockfd < 0) {
-            continue;
-        }
-
-        if (worker[i].revents & (POLLRDNORM | POLLERR)) {
-            worker_idx = get_worker_idx_from_sockfd(srvr, sockfd);
-            if (0 < recv_avd_hdr(sockfd, &rmsg.hdr)) {
-                if (0 > (rc = process_worker_message(srvr, sockfd, &rmsg, worker_idx))) {
-                    close_worker_connection(srvr, worker_idx);
-                }
-            } else {
-                close_worker_connection(srvr, worker_idx);
-            }
-
-            *nready -= 1;
-
-            if (*nready <= 0) {
-                break;
-            }
-        }
-#undef sockfd
-    }
-#undef worker
-}
-
-int32_t get_user_idx_from_sockfd(server_t *srvr, int32_t sockfd) {
-    int32_t     idx;
-    user_t      *user;
-    for (idx = 0; idx < MAX_USER; idx++) {
-        user = &srvr->users[idx];
-        if (user->conn.sockfd == sockfd) {
-            return idx;
-        }
-    }
-
-    return -1;
-}
-
-void close_user_connection(server_t *srvr, int32_t sockfd,
-                           int32_t poll_id, int32_t user_idx) {
-
-    srvr->n_clients--;
-    close(sockfd);
-    srvr->poller[poll_id].fd = -1;
-
-    if (user_idx < 0) {
-        avd_log_info("Cleared stale\n\tsockfd : %d\n\tpoll_id : %d", sockfd, poll_id);
-        return;
-    }
-
-    user_t *user = &srvr->users[user_idx];
-
-    avd_log_info("User connection closed. User id : %d", user->id);
-    avd_log_fatal("sockfd : %d, ", user->conn.sockfd);
-    avd_log_fatal("poll_id : %d", user->poll_id);
-
-    memset(user, 0, sizeof(user_t));
-
-}
-
-int32_t process_user_msg(server_t *srvr, int32_t sockfd,
-                        message_t *msg, int32_t user_idx) {
-
-    int32_t     i, j, rc = -1;
-    size_t      sz;
-    size_t      smsg_sz;
-    message_t   res;
-    user_t      *user = &srvr->users[user_idx];
-
-    memset(&res, 0, sizeof(res));
-
-    avd_log_debug("Header received ::: [Type : %d] | [Size : %ld]",
-            msg->hdr.type, msg->hdr.size);
-
-    switch (msg->hdr.type) {
-        case AVD_MSG_F_NEW_CON: {
-            char        *dir = NULL;
-            if (0 < (sz = msg->hdr.size - MSG_HDR_SZ)) {
-                rc = recv_avd_msg(sockfd, msg->buf, sz);
-                if (0 > rc) {
-                    return rc;
-                }
-            }
-
-            if (0 > (rc = add_user_s_sess(srvr, user_idx))) {
-                return rc;
-            }
-
-            set_msg_type(res.hdr.type, AVD_MSG_F_NEW_CON);
-            res.hdr.seq_no = 1;
-
-            smsg_conn_t nc_smsg;
-            nc_smsg.uid = user->id;
-            nc_smsg.poll_id = user->poll_id;
-
-            smsg_sz = smsg_conn_t_encoded_sz(&nc_smsg);
-            smsg_conn_t_encode(res.buf, 0, smsg_sz, &nc_smsg);
-            res.hdr.size = msg_sz(smsg_conn_t);
-
-            if (NULL == (dir = get_or_create_user_dir(user->id))) {
-                avd_log_error("Failed to create the task directory");
-                //TODO handle the error
-                return -1;
-            }
-
-            user->dir = dir;
-
-            rc = send(sockfd, &res, res.hdr.size, 0);
-            if (rc < 0) {
-                rc = -errno;
-                avd_log_error("Send error: %s\n", strerror(errno));
-                return rc;;
-            }
-
-            break;
-        }
-        case AVD_MSG_F_RE_CON: {
-            char        *dir = NULL;
-            if (0 < (sz = msg->hdr.size - MSG_HDR_SZ)) {
-                rc = recv_avd_msg(sockfd, msg->buf, sz);
-                if (0 > rc) {
-                    return rc;
-                }
-            }
-
-            umsg_rc_t m;
-            umsg_rc_t_decode(msg->buf, 0, sizeof(msg->buf), &m);
-
-            avd_log_debug("RCON Msg ::: Uid : %d | Size : %ld", m.uid, sz);
-
-            if (!user_exists_s_sess(m.uid)) {
-                avd_log_error("Failed to find user session with reconnect id %d", m.uid);
-                return -1;
-            }
-
-            user->id = m.uid;
-            update_user_s_sess(m.uid, "poll_id", cJSON_CreateNumber(user->poll_id));
-
-            set_msg_type(res.hdr.type, AVD_MSG_F_RE_CON);
-            res.hdr.seq_no = 1;
-
-            smsg_conn_t rc_smsg;
-            rc_smsg.uid = user->id;
-            rc_smsg.poll_id = user->poll_id;
-
-            smsg_sz = smsg_conn_t_encoded_sz(&rc_smsg);
-            smsg_conn_t_encode(res.buf, 0, smsg_sz, &rc_smsg);
-            res.hdr.size = msg_sz(smsg_conn_t);
-
-            if (NULL == (dir = get_or_create_user_dir(user->id))) {
-                avd_log_error("Failed to create the task directory");
-                //TODO handle the error
-                return -1;
-            }
-
-            user->dir = dir;
-
-            rc = send(sockfd, &res, res.hdr.size, 0);
-            if (rc < 0) {
-                rc = -errno;
-                avd_log_error("Send error: %s\n", strerror(errno));
-                return rc;
-            }
-
-            break;
-        }
-        case AVD_MSG_F_TASK: {
-            if (0 < (sz = msg->hdr.size - MSG_HDR_SZ)) {
-                rc = recv_avd_msg(sockfd, msg->buf, sz);
-                if (0 > rc) {
-                    return rc;
-                }
-            }
-
-            tmsg_args_t tmsg;
-            tmsg_args_t_decode(msg->buf, 0, sizeof(msg->buf), &tmsg);
-
-            for (i = 0; i < MAX_TASK; i++) {
-                if (user->tasks[i].id == 0) {
-                    break;
-                }
-            }
-
-            if (i == MAX_TASK) {
-                avd_log_error("Task limit reached! Task not added!");
-                return -1;
-            }
-
-            user->tasks[i].id = user->num_tasks + 1;
-            user->num_tasks += 1;
-            update_user_s_sess(user->id, "num_tasks", cJSON_CreateNumber(user->num_tasks));
-
-#define task user->tasks[i]
-            cJSON   *new_task =cJSON_CreateObject();
-            cJSON   *stage_arr = cJSON_CreateArray();
-
-            snprintf(task.name, MAX_TASK_NAME_SZ, "%s", tmsg.task_name);
-            cJSON_AddItemToObject(new_task, "name", cJSON_CreateString(task.name));
-
-            snprintf(task.filename, MAX_FILE_NAME_SZ, "%s/user%d/%s", APP_ROOT, user->id, TASK_FILE);
-            cJSON_AddItemToObject(new_task, "bin_file", cJSON_CreateString(task.filename));
-
-            snprintf(task.input_file, MAX_FILE_NAME_SZ, "%s/user%d/%s", APP_ROOT, user->id, INPUT_FILE );
-            cJSON_AddItemToObject(new_task, "input_file", cJSON_CreateString(task.input_file));
-
-            task.num_stages = tmsg.num_stages;
-            cJSON_AddItemToObject(new_task, "num_stages", cJSON_CreateNumber(task.num_stages));
-
-            for (j = 0; j < task.num_stages; j++) {
-#define stage task.stages[j]
-                cJSON   *stg = cJSON_CreateObject();
-
-                stage.num = tmsg.stages[j].num;
-                cJSON_AddItemToObject(stg, "num", cJSON_CreateNumber(stage.num));
-
-                snprintf(stage.func_name, MAX_STAGE_FUNC_NAME_SZ, "%s", tmsg.stages[j].func);
-                cJSON_AddItemToObject(stg, "func", cJSON_CreateString(stage.func_name));
-
-                cJSON_AddItemToArray(stage_arr, stg);
-#undef stage
-            }
-
-            add_user_task_s_sess(user->id, new_task);
-#undef task
-            break;
-        }
-        case AVD_MSG_F_FILE_TSK:
-        case AVD_MSG_F_FILE_TSK_FIN: {
-            char        file[MAX_FILE_NAME_SZ];
-            FILE        *fp;
-
-            if (user->file_seq_no != msg->hdr.seq_no) {
-                avd_log_error("Out of order message. Expecting seq %d, Received %d",
-                        user->file_seq_no, msg->hdr.seq_no);
-                return -1;
-            }
-
-            if (0 < (sz = msg->hdr.size - MSG_HDR_SZ)) {
-                rc = recv_avd_msg(sockfd, msg->buf, sz);
-                if (0 > rc) {
-                    return rc;
-                }
-            }
-
-            snprintf(file, MAX_FILE_NAME_SZ, "%s/%s", user->dir, TASK_FILE);
-
-            fp = fopen(file, "ab+");
-
-            if (user->file_seq_no == 1) {
-                fseek(fp, 0L, SEEK_SET);
-            }
-
-            fwrite(msg->buf, rc, 1, fp);
-
-            if (is_msg_type(msg->hdr.type, AVD_MSG_F_FILE_TSK_FIN)) {
-                if(chmod(file, S_IRUSR | S_IWUSR | S_IXUSR
-                         | S_IXGRP | S_IRGRP | S_IWGRP | S_IXOTH
-                         | S_IROTH | S_IWOTH) != 0) {
-                    avd_log_error("Error changing file mode to executable for file %s", file);
-                    return -1;
-                }
-                user->file_seq_no = 1;
-                avd_log_info("Created Task file : %s", file);
-            } else {
-                user->file_seq_no += 1;
-            }
-
-            fclose(fp);
-
-            break;
-        }
-        case AVD_MSG_F_FILE_IN:
-        case AVD_MSG_F_FILE_IN_FIN: {
-            char        file[MAX_FILE_NAME_SZ];
-            FILE        *fp;
-
-            if (user->file_seq_no != msg->hdr.seq_no) {
-                avd_log_error("Out of order message. Expecting seq %d, Received %d",
-                        user->file_seq_no, msg->hdr.seq_no);
-                return -1;
-            }
-
-            if (0 < (sz = msg->hdr.size - MSG_HDR_SZ)) {
-                rc = recv_avd_msg(sockfd, msg->buf, sz);
-                if (0 > rc) {
-                    return rc;
-                }
-            }
-
-            snprintf(file, MAX_FILE_NAME_SZ, "%s/%s", user->dir, INPUT_FILE);
-
-            fp = fopen(file, "ab+");
-
-            if (user->file_seq_no == 1) {
-                fseek(fp, 0L, SEEK_SET);
-            }
-
-            fwrite(msg->buf, rc, 1, fp);
-
-            if (is_msg_type(msg->hdr.type, AVD_MSG_F_FILE_IN_FIN)) {
-                user->file_seq_no = 1;
-                avd_log_info("Created Input file : %s", file);
-            } else {
-                user->file_seq_no += 1;
-            }
-
-            fclose(fp);
-
-            break;
-        }
-        case AVD_MSG_F_FILE_OUT:
-        case AVD_MSG_F_FILE_OUT_FIN: {
-            FILE        *fp;
-            char        file[MAX_FILE_NAME_SZ];
-
-            if (user->file_seq_no != msg->hdr.seq_no) {
-                avd_log_error("Out of order message. Expecting seq %d, Received %d",
-                        user->file_seq_no, msg->hdr.seq_no);
-                return -1;
-            }
-
-            if (0 < (sz = msg->hdr.size - MSG_HDR_SZ)) {
-                rc = recv_avd_msg(sockfd, msg->buf, sz);
-                if (0 > rc) {
-                    return rc;
-                }
-            }
-
-            snprintf(file, MAX_FILE_NAME_SZ, "%s/%s", user->dir, OUTPUT_FILE);
-
-            fp = fopen(file, "ab+");
-
-            if (user->file_seq_no == 1) {
-                fseek(fp, 0L, SEEK_SET);
-            }
-
-            fwrite(msg->buf, rc, 1, fp);
-
-            if (is_msg_type(msg->hdr.type, AVD_MSG_F_FILE_OUT_FIN)) {
-                user->file_seq_no = 1;
-                avd_log_info("Created Output file : %s", file);
-            } else {
-                user->file_seq_no += 1;
-            }
-
-            fclose(fp);
-
-            break;
-        }
-        case AVD_MSG_F_CLOSE: {
-            remove_user_s_sess(user->id);
-            close_user_connection(srvr, sockfd, user->poll_id, user_idx);
-            break;
-        }
-        case AVD_MSG_F_CTRL:
-            break;
-        default:
-            avd_log_error("Error");
-    }
-
-    return 0;
-}
-
-void user_communications(server_t *srvr, int *nready) {
-
-    int32_t         i;
-    int32_t         rc;
-    int32_t         user_idx;
-    message_t       rmsg;
-
-    memset(&rmsg, 0, sizeof(rmsg));
-
-#define user_poll srvr->poller
-    for (i = 1; i <= srvr->curr_poll_sz; i++) {
-#define sockfd user_poll[i].fd
-        if (sockfd < 0) {
-            continue;
-        }
-
-        if (user_poll[i].revents & (POLLRDNORM | POLLERR)) {
-            if (0 > (user_idx = get_user_idx_from_sockfd(srvr, sockfd))) {
-                close_user_connection(srvr, sockfd, i, user_idx);
-                continue;
-            }
-
-            if (0 < recv_avd_hdr(sockfd, &rmsg.hdr)) {
-                if (0 > (rc = process_user_msg(srvr, sockfd, &rmsg, user_idx))) {
-                    avd_log_error("Error receiving message");
-                    close_user_connection(srvr, sockfd, i, user_idx);
-                }
-            } else {
-                avd_log_error("Error receiving header");
-                close_user_connection(srvr, sockfd, i, user_idx);
-            }
-
-            *nready -= 1;
-
-            if (*nready <= 0) {
-                break;
-            }
-        }
-#undef sockfd
-    }
-#undef user_poll
-}
-
-int32_t connect_worker(server_t *srvr) {
-
-    int32_t             i, rc = 0;
-    int32_t             nready;
-    int32_t             worker_fd;
-
-    socklen_t           worker_addr_sz;
-    struct sockaddr_in  worker_addr;
-    conn_info_t         *s_conn = &srvr->conn;
-    worker_t            *worker = &srvr->workers[srvr->new_client_id];
-
-#define worker_poll srvr->poller
-
-    nready = poll(worker_poll, (uint32_t)(srvr->curr_poll_sz), INFTIM);
-
-    if (worker_poll[0].revents & POLLRDNORM) {
-
-        worker_addr_sz = sizeof(worker_addr);
-
-        worker_fd = accept(s_conn->sockfd, (struct sockaddr *)&worker_addr, &worker_addr_sz);
-        if (worker_fd < 0) {
-            rc = -errno;
-            print("[ERROR][CRITICAL] ::: Worker Accept connection failed: %s\n",
-                    strerror(errno));
-
-            goto error;
-        }
-
-        for (i = 1; i < srvr->max_poll_sz; i++) {
-            if (worker_poll[i].fd < 0) {
-
-                worker_poll[i].fd = worker_fd;
-                worker_poll[i].events = POLLRDNORM;
-
-                worker->conn.sockfd = worker_fd;
-                worker->conn.port = sock_ntop_port((struct sockaddr *)&worker_addr);
-                snprintf(worker->conn.ip_addr_s, INET_ADDRSTRLEN, "%s",
-                         sock_ntop_addr((struct sockaddr *)&worker_addr));
-
-                srvr->n_clients += 1;
-
-                print("New Worker connected: %s, ID: %d, (Total workers: %d)\n",
-                        sock_ntop((struct sockaddr *)&worker_addr),
-                        worker->id, srvr->n_clients);
-
-                break;
-            }
-        }
-
-#undef worker_poll
-
-        if (i == srvr->max_poll_sz) {
-            print("[ERROR][CRITICAL] ::: Too many Workers connected\n");
-            goto error;
-        }
-
-
-        if (i > srvr->curr_poll_sz)
-            srvr->curr_poll_sz = i;
-
-    }
-
-    worker_communications(srvr, &nready);
-
-error:
-    return rc;
-}
-
-
-int32_t connect_user(server_t *srvr) {
-
-    int32_t             i, j, rc = 0;
-    int32_t             nready;
-    int32_t             user_fd;
-    socklen_t           user_addr_sz;
-    struct sockaddr_in  user_addr;
-    conn_info_t         *s_conn = &srvr->conn;
-    user_t              *user;
-
-
-#define user_poll srvr->poller
-
-    nready = poll(user_poll, srvr->curr_poll_sz + 1, INFTIM);
-
-    if (user_poll[0].revents & POLLRDNORM) {
-
-        user_addr_sz = sizeof(user_addr);
-
-        user_fd = accept(s_conn->sockfd, (struct sockaddr *)&user_addr, &user_addr_sz);
-        if (user_fd < 0) {
-            rc = -errno;
-            avd_log_error("Accept connection failed: %s\n", strerror(errno));
-            goto bail;
-        }
-
-        for (j = 0; j < MAX_USER; j++) {
-            if (srvr->users[j].id == 0) {
-                user = &srvr->users[j];
-                break;
-            }
-        }
-
-        if (j == MAX_USER) {
-            avd_log_warn("Too many Users connected\n");
-            memset(user, 0, sizeof(user_t));
-            goto bail;
-        }
-
-        for (i = 1; i < srvr->max_poll_sz; i++) {
-            if (user_poll[i].fd < 0) {
-
-                user_poll[i].fd = user_fd;
-                user_poll[i].events = POLLRDNORM;
-
-                user->file_seq_no = 1;
-                user->conn.sockfd = user_fd;
-                user->poll_id = i;
-                user->conn.port = sock_ntop_port((struct sockaddr *)&user_addr);
-                snprintf(user->conn.ip_addr_s, INET_ADDRSTRLEN, "%s",
-                         sock_ntop_addr((struct sockaddr *)&user_addr));
-
-                srvr->n_clients += 1;
-
-                avd_log_info("New User connected: %s", sock_ntop((struct sockaddr *)&user_addr));
-                avd_log_debug("\tUser Info:\n\t\tsockfd : %d\n\t\tpoll_id : %d", user->conn.sockfd, user->poll_id);
-                break;
-            }
-        }
-
-#undef user_poll
-
-        if (i == srvr->max_poll_sz) {
-            avd_log_warn("Too many Users connected\n");
-            memset(user, 0, sizeof(user_t));
-            goto bail;
-        }
-
-
-        if (i > srvr->curr_poll_sz)
-            srvr->curr_poll_sz = i;
-
-        nready--;
-
-    }
-
-    user_communications(srvr, &nready);
-bail:
     return rc;
 }
 
@@ -691,16 +89,17 @@ static void * start_server(void * args) {
 
     rc = server_init(conn, srvr->type);
     if (rc < 0) {
-        avd_log_error("Server init failed: %s\n", strerror(errno));
-        goto error;
+        avd_log_error("Server init failed: %s", strerror(errno));
+        close(conn->sockfd);
+        exit(EXIT_FAILURE);
     }
 
     srvr->poller[0].fd = conn->sockfd;
     srvr->poller[0].events = POLLRDNORM;
 
     switch(srvr->type) {
-        case USER:
-
+        case USER: {
+            int32_t nready;
             for (i = 1; i < MAX_USER_POLL; i++) {
                 srvr->poller[i].fd = -1;
             }
@@ -722,20 +121,26 @@ static void * start_server(void * args) {
             }
 
             while (true) {
-                rc = connect_user(srvr);
+                nready = connect_user(srvr);
+                if (nready < 0) {
+                    avd_log_error("Error occurred 'connect_user': %s", strerror(errno));
+                }
+                user_communications(srvr, nready);
             }
             break;
-        case WORKER:
-
+        }
+        case WORKER: {
+            int32_t nready;
             for (i = 1; i < MAX_WORKER_POLL; i++) {
                 srvr->poller[i].fd = -1;
             }
 
             srvr->max_poll_sz = MAX_WORKER_POLL;
             srvr->curr_poll_sz = 0;
-            srvr->new_client_id = 1;
+            srvr->new_client_id = get_max_worker_id_s_sess();
 
             __sync_add_and_fetch(&g_start_processing, 1);
+
             /*
              * Ensure the main thread has started other threads
              * and now its time to go for real processing loop.
@@ -748,15 +153,16 @@ static void * start_server(void * args) {
             }
 
             while (true) {
-                rc = connect_worker(srvr);
+                nready = connect_worker(srvr);
+                if (nready < 0) {
+                    avd_log_error("Error occurred 'connect_worker': %s", strerror(errno));
+                }
+                worker_communications(srvr, nready);
             }
             break;
+        }
     }
 
-    return NULL;
-
-error:
-    close(conn->sockfd);
     return NULL;
 }
 
@@ -767,7 +173,10 @@ void setup_logger(char *log_file, int32_t level, int32_t quiet) {
 }
 
 int32_t main (int32_t argc, char const *argv[]) {
-    pthread_t               threads[2];
+    pthread_t               threads[3];
+#define u_thrd              threads[0]
+#define w_thrd              threads[1]
+#define s_thrd              threads[2]
     conf_parse_info_t       cfg;
     args_t                  args[2];
 #define u_args              args[0]
@@ -808,15 +217,17 @@ int32_t main (int32_t argc, char const *argv[]) {
     snprintf(w_args.addr,INET_ADDRSTRLEN, "%s", cfg.sconf.addr);
     w_args.port = cfg.sconf.wport;
 
-    if (0 != pthread_create(&threads[0], NULL, start_server, (void *)&u_args)) {
+    if (0 != pthread_create(&u_thrd, NULL, start_server, (void *)&u_args)) {
         avd_log_fatal("User server thread creation failed");
         exit(EXIT_FAILURE);
     }
+    pthread_setname_np(u_thrd, "avd_user_server");
 
-    if (0 != pthread_create(&threads[1], NULL, start_server, (void *)&w_args)) {
+    if (0 != pthread_create(&w_thrd, NULL, start_server, (void *)&w_args)) {
         avd_log_fatal("Worker server thread creation failed");
         exit(EXIT_FAILURE);
     }
+    pthread_setname_np(w_thrd, "avd_worker_server");
 
     while (all_threads_ready != *(volatile uint32_t *)&g_start_processing) {
         usleep(10);
@@ -825,8 +236,8 @@ int32_t main (int32_t argc, char const *argv[]) {
     g_start_processing = enter_processing;
     __sync_synchronize();
 
-    pthread_join(threads[0], NULL);
-    pthread_join(threads[1], NULL);
+    pthread_join(u_thrd, NULL);
+    pthread_join(w_thrd, NULL);
 
     exit(EXIT_SUCCESS);
 }

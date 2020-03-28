@@ -3,7 +3,6 @@
 #include "avd_session.h"
 #include "avd_message.h"
 
-bool                        g_task_sent = false;
 char                        *g_conf_file_name = NULL;
 extern avd_user_session_t   g_user_session;
 
@@ -33,8 +32,8 @@ int32_t send_tasks(user_t *user) {
         for (j = 0; j < task.num_stages; j++) {
 #define stage task.stages[j]
             tmsg.stages[j].num = stage.num;
-            tmsg.stages[j].func = (char *)malloc(strlen(stage.func_name));
-            snprintf(tmsg.stages[j].func, strlen(stage.func_name), "%s", stage.func_name);
+            tmsg.stages[j].func = (char *)malloc(strlen(stage.func_name)+1);
+            snprintf(tmsg.stages[j].func, strlen(stage.func_name)+1, "%s", stage.func_name);
 #undef stage
         }
 
@@ -91,34 +90,21 @@ void server_communication (user_t *user) {
 
     memset(&rmsg, 0, sizeof(rmsg));
 
+#define sockfd conn->sockfd
+    if (sockfd < 0)
+        return;
+
     if (0 != (rc = send_tasks(user))) {
         avd_log_error("Error sending tasks to the server");
         // TODO : Handle the error and do not exit
         exit(1);
     }
 
-#define sockfd conn->sockfd
-    if (sockfd < 0)
-        return;
-
     while(true) {
         usleep(1000);
     }
 
 #undef sockfd
-}
-
-int32_t check_and_get_session(user_t *user) {
-    int32_t     rc = -1;
-    if (file_exists(SESSION_FILE, F_OK)) {
-        if (0 != (rc = get_user_u_sess(user))) {
-            avd_log_fatal("Failed to restore user session");
-            exit(EXIT_FAILURE);
-        }
-        rc = 0;
-    }
-
-    return rc;
 }
 
 int32_t reconnect(user_t *user) {
@@ -132,17 +118,20 @@ int32_t reconnect(user_t *user) {
     memset(&msg, 0, sizeof(msg));
     memset(&rmsg, 0, sizeof(rmsg));
 
-    set_msg_type(msg.hdr.type, AVD_MSG_F_RE_CON);
     avd_log_info("Restored user session");
 
     umsg_rc_t umsg;
     umsg.uid = user->id;
+    umsg.uname = (char *)malloc(strlen(user->uname)+1);
+    snprintf(umsg.uname, strlen(user->uname)+1, "%s", user->uname);
+
     umsg_sz = umsg_rc_t_encoded_sz(&umsg);
     umsg_rc_t_encode(msg.buf, 0, umsg_sz, &umsg);
+
+    set_msg_type(msg.hdr.type, AVD_MSG_F_RE_CON);
     msg.hdr.size = msg_sz(umsg_rc_t);
 
-    rc = send(conn->sockfd, &msg, msg.hdr.size, 0);
-    if (rc < 0) {
+    if(0 > (rc = send(conn->sockfd, &msg, msg.hdr.size, 0))) {
         avd_log_error("Send error: %s\n", strerror(errno));
         goto bail;
     }
@@ -159,14 +148,14 @@ int32_t reconnect(user_t *user) {
         }
     }
 
-    smsg_conn_t m;
-    smsg_conn_t_decode(rmsg.buf, 0, sizeof(rmsg.buf), &m);
+    smsg_urc_t m;
+    smsg_urc_t_decode(rmsg.buf, 0, sizeof(rmsg.buf), &m);
 
     user->id = m.uid;
     user->poll_id = m.poll_id;
 
-    update_user_u_session("id", cJSON_CreateNumber(user->id));
-    update_user_u_session("poll_id", cJSON_CreateNumber(user->poll_id));
+    update_user_u_sess("id", cJSON_CreateNumber(user->id));
+    update_user_u_sess("poll_id", cJSON_CreateNumber(user->poll_id));
 
     return 0;
 
@@ -176,10 +165,11 @@ bail:
 }
 
 int32_t new_connection(user_t *user) {
-    int32_t     rc = -1;
-    int32_t     sz;
-    message_t   msg;
-    message_t   rmsg;
+    int32_t         rc = -1;
+    int32_t         umsg_sz;
+    int32_t         sz;
+    message_t       msg;
+    message_t       rmsg;
     conn_info_t     *conn = &user->conn;
 
     memset(&msg, 0, sizeof(msg));
@@ -187,7 +177,14 @@ int32_t new_connection(user_t *user) {
 
     set_msg_type(msg.hdr.type, AVD_MSG_F_NEW_CON);
     avd_log_info("User session not found. Creating new connection");
-    msg.hdr.size = MSG_HDR_SZ;
+
+    umsg_nc_t   umsg;
+    umsg.uname = (char *)malloc(strlen(user->uname)+1);
+    snprintf(umsg.uname, strlen(user->uname)+1, "%s", user->uname);
+
+    umsg_sz = umsg_nc_t_encoded_sz(&umsg);
+    umsg_nc_t_encode(msg.buf, 0, umsg_sz, &umsg);
+    msg.hdr.size = msg_sz(umsg_nc_t);
 
     rc = send(conn->sockfd, &msg, msg.hdr.size, 0);
     if (rc < 0) {
@@ -207,13 +204,13 @@ int32_t new_connection(user_t *user) {
         }
     }
 
-    smsg_conn_t m;
-    smsg_conn_t_decode(rmsg.buf, 0, sizeof(rmsg.buf), &m);
+    smsg_urc_t m;
+    smsg_urc_t_decode(rmsg.buf, 0, sizeof(rmsg.buf), &m);
 
     user->id = m.uid;
     user->poll_id = m.poll_id;
 
-    create_user_u_session(user);
+    create_user_u_sess(user);
 
     return 0;
 bail:
@@ -230,24 +227,22 @@ int32_t connect_server(user_t *user) {
     conn->sockfd = user_init();
 
     if (0 == (rc = inet_pton(AF_INET, conn->ip_addr_s, &srvr_addr.sin_addr.s_addr))) {
-        avd_log_error("Server IP inet_pton error\n");
+        avd_log_error("Server IP inet_pton error:%s", strerror(errno));
         goto bail;
     }
     srvr_addr.sin_family = AF_INET;
     srvr_addr.sin_port = htons(conn->port);
 
     avd_log_debug("Connecting to server on %s:%d", conn->ip_addr_s, conn->port);
-    rc = connect(conn->sockfd, (struct sockaddr *)&srvr_addr, sizeof(srvr_addr));
-    if (rc < 0) {
-        avd_log_fatal("Error connecting to the server at \"%s:%d\" : %s\n",
+    if (0 > (rc = connect(conn->sockfd, (struct sockaddr *)&srvr_addr, sizeof(srvr_addr)))) {
+        avd_log_fatal("Error connecting to the server at \"%s:%d\" : %s",
                 conn->ip_addr_s, conn->port, strerror(errno));
         goto bail;
     }
 
-    print("Connected to server on %s\n", sock_ntop((struct sockaddr *)&srvr_addr));
+    avd_log_info("Connected to server on %s", sock_ntop((struct sockaddr *)&srvr_addr));
 
-
-    if (0 != (rc = check_and_get_session(user))) {
+    if (0 != (rc = check_and_get_u_sess(user))) {
         new_connection(user);
     } else {
         reconnect(user);
@@ -269,9 +264,7 @@ int32_t start_user (user_t *user) {
         goto bail;
     }
 
-    while(true) {
-        server_communication(user);
-    }
+    server_communication(user);
 bail:
     return rc;
 }
@@ -285,10 +278,9 @@ void setup_logger(log_info_t *logger) {
 int32_t main (int32_t argc, char *argv[]) {
 
     user_t              user;
+    memset(&user, 0, sizeof(user));
 
     signal_intr(SIGINT, sig_int_handler);
-
-    memset(&user, 0, sizeof(user));
 
     g_conf_file_name = (char *)argv[1];
 

@@ -38,8 +38,12 @@
 #define AVD_MSG_F_FILE_IN_FIN   (1 << 6)
 #define AVD_MSG_F_FILE_OUT      (1 << 7)
 #define AVD_MSG_F_FILE_OUT_FIN  (1 << 8)
-#define AVD_MSG_F_CTRL          (1 << 9)
-#define AVD_MSG_F_CLOSE         (1 << 10)
+#define AVD_MSG_F_TASK_POLL     (1 << 9)
+#define AVD_MSG_F_TASK_POLL_TR  (1 << 10)
+#define AVD_MSG_F_TASK_POLL_FL  (1 << 11)
+#define AVD_MSG_F_TASK_STG      (1 << 12)
+#define AVD_MSG_F_CTRL          (1 << 30)
+#define AVD_MSG_F_CLOSE         (1 << 31)
 
 #define reset_msg_type(type)        (type = 0)
 #define set_msg_type(type, flag)    (type |= flag)
@@ -69,16 +73,51 @@ typedef struct message_s {
     char        buf[MAX_BUF_SZ];
 } __attribute__((packed)) message_t;
 
+// User Message : NewConnect (nc)
+typedef struct umsg_nc_s {
+    char        *uname;
+} umsg_nc_t;
+
 // User Message : Reconnect (rc)
 typedef struct umsg_rc_s {
     int32_t     uid;
+    char        *uname;
 } umsg_rc_t;
 
+// Worker Message : New Connect (nc)
+typedef struct wmsg_nc_s {
+    char        *uname;
+} wmsg_nc_t;
+
+// Worker Message : Reconnect (rc)
+typedef struct wmsg_rc_s {
+    int32_t     wid;
+    char        *uname;
+} wmsg_rc_t;
+
+// Worker Message : Task Ready Poll (tr)
+typedef struct wmsg_tr_s {
+    int32_t     wid;
+    char        *uname;
+} wmsg_tr_t;
+
 // Server Message : New User Connect (nuc)
-typedef struct smsg_conn_s {
+typedef struct smsg_urc_s {
     int32_t     uid;
     int32_t     poll_id;
-} smsg_conn_t;
+} smsg_urc_t;
+
+typedef struct smsg_wrc_s {
+    int32_t     wid;
+    int32_t     poll_id;
+} smsg_wrc_t;
+
+typedef struct smsg_ts_s {
+    int32_t     tid;
+    int32_t     stg_num;
+    char        *func;
+    char        *tname;
+} smsg_ts_t;
 
 typedef struct tmsg_file_s {
     char    *buf;
@@ -813,10 +852,39 @@ static inline int32_t __string_decode_little_endian_array(const void *_buf, uint
 /******************************************************
  *                 HELPER FUNCTIONS                   *
  ******************************************************/
+uint32_t __umsg_nc_t_encoded_sz(const umsg_nc_t *msg) {
+    uint32_t    sz = 0;
+
+    sz += __string_encoded_array_sz(&(msg->uname), 1);
+
+    return sz;
+}
+
+int32_t __umsg_nc_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const umsg_nc_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __string_encode_array(buf, offset + pos, maxlen - pos, &(msg->uname), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t __umsg_nc_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, umsg_nc_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __string_decode_array(buf, offset + pos, maxlen - pos, &(msg->uname), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
 uint32_t __umsg_rc_t_encoded_sz(const umsg_rc_t *msg) {
     uint32_t    sz = 0;
 
     sz += __int32_t_encoded_array_sz(&(msg->uid), 1);
+    sz += __string_encoded_array_sz(&(msg->uname), 1);
 
     return sz;
 }
@@ -826,6 +894,9 @@ int32_t __umsg_rc_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const um
     int32_t     len;
 
     len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->uid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __string_encode_array(buf, offset + pos, maxlen - pos, &(msg->uname), 1);
     if (len < 0) return len; else pos += len;
 
     return pos;
@@ -838,10 +909,111 @@ int32_t __umsg_rc_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, um
     len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->uid), 1);
     if (len < 0) return len; else pos += len;
 
+    len = __string_decode_array(buf, offset + pos, maxlen - pos, &(msg->uname), 1);
+    if (len < 0) return len; else pos += len;
+
     return pos;
 }
 
-uint32_t __smsg_conn_t_encoded_sz(const smsg_conn_t *msg) {
+uint32_t __wmsg_nc_t_encoded_sz(const wmsg_nc_t *msg) {
+    uint32_t    sz = 0;
+
+    sz += __string_encoded_array_sz(&(msg->uname), 1);
+
+    return sz;
+}
+
+int32_t __wmsg_nc_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const wmsg_nc_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __string_encode_array(buf, offset + pos, maxlen - pos, &(msg->uname), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t __wmsg_nc_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, wmsg_nc_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __string_decode_array(buf, offset + pos, maxlen - pos, &(msg->uname), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+uint32_t __wmsg_rc_t_encoded_sz(const wmsg_rc_t *msg) {
+    uint32_t    sz = 0;
+
+    sz += __int32_t_encoded_array_sz(&(msg->wid), 1);
+    sz += __string_encoded_array_sz(&(msg->uname), 1);
+
+    return sz;
+}
+
+int32_t __wmsg_rc_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const wmsg_rc_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->wid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __string_encode_array(buf, offset + pos, maxlen - pos, &(msg->uname), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t __wmsg_rc_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, wmsg_rc_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->wid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __string_decode_array(buf, offset + pos, maxlen - pos, &(msg->uname), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+uint32_t __wmsg_tr_t_encoded_sz(const wmsg_tr_t *msg) {
+    uint32_t    sz = 0;
+
+    sz += __int32_t_encoded_array_sz(&(msg->wid), 1);
+    sz += __string_encoded_array_sz(&(msg->uname), 1);
+
+    return sz;
+}
+
+int32_t __wmsg_tr_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const wmsg_tr_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->wid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __string_encode_array(buf, offset + pos, maxlen - pos, &(msg->uname), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t __wmsg_tr_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, wmsg_tr_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->wid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __string_decode_array(buf, offset + pos, maxlen - pos, &(msg->uname), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+uint32_t __smsg_urc_t_encoded_sz(const smsg_urc_t *msg) {
     uint32_t    sz = 0;
 
     sz += __int32_t_encoded_array_sz(&(msg->uid), 1);
@@ -850,7 +1022,7 @@ uint32_t __smsg_conn_t_encoded_sz(const smsg_conn_t *msg) {
     return sz;
 }
 
-int32_t __smsg_conn_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const smsg_conn_t *msg) {
+int32_t __smsg_urc_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const smsg_urc_t *msg) {
     uint32_t    pos = 0;
     int32_t     len;
 
@@ -863,7 +1035,7 @@ int32_t __smsg_conn_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const 
     return pos;
 }
 
-int32_t __smsg_conn_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, smsg_conn_t *msg) {
+int32_t __smsg_urc_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, smsg_urc_t *msg) {
     uint32_t    pos = 0;
     int32_t     len;
 
@@ -871,6 +1043,83 @@ int32_t __smsg_conn_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, 
     if (len < 0) return len; else pos += len;
 
     len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->poll_id), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+uint32_t __smsg_wrc_t_encoded_sz(const smsg_wrc_t *msg) {
+    uint32_t    sz = 0;
+
+    sz += __int32_t_encoded_array_sz(&(msg->wid), 1);
+    sz += __int32_t_encoded_array_sz(&(msg->poll_id), 1);
+
+    return sz;
+}
+
+int32_t __smsg_wrc_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const smsg_wrc_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->wid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->poll_id), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t __smsg_wrc_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, smsg_wrc_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->wid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->poll_id), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+uint32_t __smsg_ts_t_encoded_sz(const smsg_ts_t *msg) {
+    uint32_t    sz = 0;
+
+    sz += __int32_t_encoded_array_sz(&(msg->tid), 1);
+    sz += __int32_t_encoded_array_sz(&(msg->stg_num), 1);
+    sz += __string_encoded_array_sz(&(msg->func), 1);
+
+    return sz;
+}
+
+int32_t __smsg_ts_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const smsg_ts_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->tid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __string_encode_array(buf, offset + pos, maxlen - pos, &(msg->func), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->stg_num), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t __smsg_ts_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, smsg_ts_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->tid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __string_decode_array(buf, offset + pos, maxlen - pos, &(msg->func), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->stg_num), 1);
     if (len < 0) return len; else pos += len;
 
     return pos;
@@ -995,9 +1244,32 @@ int32_t __tmsg_args_t_decode_array(const void *buf, uint32_t offset, uint32_t ma
     return pos;
 }
 
-/******************************************************
- *              ENCODE DECODE FUNCTIONS               *
- ******************************************************/
+/* User New Connect */
+uint32_t umsg_nc_t_encoded_sz (const umsg_nc_t *msg) {
+    return 8 + __umsg_nc_t_encoded_sz(msg);
+}
+
+int32_t umsg_nc_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const umsg_nc_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __umsg_nc_t_encode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t umsg_nc_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, umsg_nc_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __umsg_nc_t_decode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+/* User Reconnect */
 uint32_t umsg_rc_t_encoded_sz (const umsg_rc_t *msg) {
     return 8 + __umsg_rc_t_encoded_sz(msg);
 }
@@ -1022,30 +1294,157 @@ int32_t umsg_rc_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, umsg
     return pos;
 }
 
-uint32_t smsg_conn_t_encoded_sz (const smsg_conn_t *msg) {
-    return 8 + __smsg_conn_t_encoded_sz(msg);
+/* Worker New connect */
+uint32_t wmsg_nc_t_encoded_sz (const wmsg_nc_t *msg) {
+    return 8 + __wmsg_nc_t_encoded_sz(msg);
 }
 
-int32_t smsg_conn_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const smsg_conn_t *msg) {
+int32_t wmsg_nc_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const wmsg_nc_t *msg) {
     uint32_t    pos = 0;
     int32_t     len;
 
-    len = __smsg_conn_t_encode(buf, offset + pos, maxlen - pos, msg);
+    len = __wmsg_nc_t_encode(buf, offset + pos, maxlen - pos, msg);
     if (len < 0) return len; else pos += len;
 
     return pos;
 }
 
-int32_t smsg_conn_t_decode(const void* buf, uint32_t offset, uint32_t maxlen, smsg_conn_t* msg) {
+int32_t wmsg_nc_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, wmsg_nc_t *msg) {
     uint32_t    pos = 0;
     int32_t     len;
 
-    len = __smsg_conn_t_decode(buf, offset + pos, maxlen - pos, msg);
+    len = __wmsg_nc_t_decode(buf, offset + pos, maxlen - pos, msg);
     if (len < 0) return len; else pos += len;
 
     return pos;
 }
 
+/* Worker Reconnect */
+uint32_t wmsg_rc_t_encoded_sz (const wmsg_rc_t *msg) {
+    return 8 + __wmsg_rc_t_encoded_sz(msg);
+}
+
+int32_t wmsg_rc_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const wmsg_rc_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __wmsg_rc_t_encode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t wmsg_rc_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, wmsg_rc_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __wmsg_rc_t_decode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+/* Worker Task Ready */
+uint32_t wmsg_tr_t_encoded_sz (const wmsg_tr_t *msg) {
+    return 8 + __wmsg_tr_t_encoded_sz(msg);
+}
+
+int32_t wmsg_tr_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const wmsg_tr_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __wmsg_tr_t_encode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t wmsg_tr_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, wmsg_tr_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __wmsg_tr_t_decode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+/* Server User Reconnect Reply */
+uint32_t smsg_urc_t_encoded_sz (const smsg_urc_t *msg) {
+    return 8 + __smsg_urc_t_encoded_sz(msg);
+}
+
+int32_t smsg_urc_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const smsg_urc_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __smsg_urc_t_encode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t smsg_urc_t_decode(const void* buf, uint32_t offset, uint32_t maxlen, smsg_urc_t* msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __smsg_urc_t_decode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+/* Server Worker Reconnect Reply */
+uint32_t smsg_wrc_t_encoded_sz (const smsg_wrc_t *msg) {
+    return 8 + __smsg_wrc_t_encoded_sz(msg);
+}
+
+int32_t smsg_wrc_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const smsg_wrc_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __smsg_wrc_t_encode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t smsg_wrc_t_decode(const void* buf, uint32_t offset, uint32_t maxlen, smsg_wrc_t* msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __smsg_wrc_t_decode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+/* Server Worker Send Task Stage */
+uint32_t smsg_ts_t_encoded_sz (const smsg_ts_t *msg) {
+    return 8 + __smsg_ts_t_encoded_sz(msg);
+}
+
+int32_t smsg_ts_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const smsg_ts_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __smsg_ts_t_encode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t smsg_ts_t_decode(const void* buf, uint32_t offset, uint32_t maxlen, smsg_ts_t* msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __smsg_ts_t_decode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+/* Task Message File */
 int32_t tmsg_file_t_encoded_sz (const tmsg_file_t *msg) {
     return 8 + __tmsg_file_t_encoded_sz(msg);
 }
@@ -1070,6 +1469,7 @@ int32_t tmsg_file_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, tm
     return pos;
 }
 
+/* Task Stage Message */
 int32_t tmsg_stage_t_encoded_sz(const tmsg_stage_t *msg) {
     return 8 + __tmsg_stage_t_encoded_array_sz(msg, 1);
 }
@@ -1094,6 +1494,7 @@ int32_t tmsg_stage_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, t
     return pos;
 }
 
+/* Task Attributes Message */
 int32_t tmsg_args_t_encoded_sz(const tmsg_args_t *msg) {
     return 8 + __tmsg_args_t_encoded_array_sz(msg, 1);
 }
@@ -1118,6 +1519,7 @@ int32_t tmsg_args_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, tm
     return pos;
 }
 
+/* Send Task Files */
 int32_t send_task_file (const char *filename, int32_t sockfd, int32_t flag) {
     int32_t     rc;
     FILE        *fp = fopen(filename, "rb");

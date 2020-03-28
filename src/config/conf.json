@@ -4,22 +4,23 @@
         "log_worker_file": "/var/log/avd_pipe_w_server.log",
         "log_level": 0,
         "log_quiet": "false",
-        "addr": "192.168.1.200",
+        "addr": "192.168.33.2",
         "uport": 1195,
         "wport": 1196
     },
     "user" : {
+        "uname": "vp",
         "log_file": "/var/log/avd_pipe_user.log",
         "log_level": 0,
         "log_quiet": "false",
-        "srvr_addr": "71.114.127.203",
+        "srvr_addr": "192.168.33.2",
         "srvr_port": 1195,
         "num_tasks": 1,
         "tasks": [{
             "name": "ABCD",
             "num_stages": 2,
-            "file" : "/home/vpatel95/Projects/avd-pipe/src/build/avd_worker",
-            "input" : "/home/vpatel95/Projects/avd-pipe/src/include/avd_message.h",
+            "file" : "/home/vagrant/avd-pipe/src/build/avd_worker",
+            "input" : "/home/vagrant/avd-pipe/src/include/avd_message.h",
             "stages": [{
                 "num": 1,
                 "func": "func_name_1"
@@ -30,10 +31,11 @@
         }]
     },
     "worker" : {
+        "uname": "vp",
         "log_file": "/var/log/avd_pipe_worker.log",
         "log_level": 0,
         "log_quiet": "true",
-        "srvr_addr": "71.114.127.203",
+        "srvr_addr": "192.168.33.2",
         "srvr_port": 1196
     }
 }

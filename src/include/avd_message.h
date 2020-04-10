@@ -17,8 +17,8 @@
 #define  __INT8_NUM_BYTES__     (1)
 #define  __INT16_NUM_BYTES__    (2)
 #define  __INT32_NUM_BYTES__    (4)
-#define  __INT64_NUM_BYTES__    (8)
 #define  __FLOAT_NUM_BYTES__    (4)
+#define  __INT64_NUM_BYTES__    (8)
 #define  __DOUBLE_NUM_BYTES__   (8)
 
 #define  __boolean_encoded_array_size           __int8_t_encoded_array_size
@@ -42,6 +42,9 @@
 #define AVD_MSG_F_TASK_POLL_TR  (1 << 10)
 #define AVD_MSG_F_TASK_POLL_FL  (1 << 11)
 #define AVD_MSG_F_TASK_STG      (1 << 12)
+#define AVD_MSG_F_PEER_ID       (1 << 13)
+#define AVD_MSG_F_PEER_ID_TR    (1 << 14)
+#define AVD_MSG_F_PEER_ID_FL    (1 << 15)
 #define AVD_MSG_F_CTRL          (1 << 30)
 #define AVD_MSG_F_CLOSE         (1 << 31)
 
@@ -50,9 +53,7 @@
 #define unset_msg_type(type, flag)  (type &= (~flag))
 #define is_msg_type(type, flag)     (type & flag)
 
-#define MSG_HDR_SZ      sizeof(msg_hdr_t)
-#define msg_sz(__msg)   MSG_HDR_SZ + sizeof(__msg)
-
+#define MSG_HDR_SZ          sizeof(msg_hdr_t)
 #define MAX_BUF_SZ          2048
 #define MAX_CHUNK_SZ        256
 #define MAX_STG             3
@@ -86,6 +87,8 @@ typedef struct umsg_rc_s {
 
 // Worker Message : New Connect (nc)
 typedef struct wmsg_nc_s {
+    int32_t     peer_port;
+    char        *peer_addr;
     char        *uname;
 } wmsg_nc_t;
 
@@ -101,12 +104,21 @@ typedef struct wmsg_tr_s {
     char        *uname;
 } wmsg_tr_t;
 
-// Server Message : New User Connect (nuc)
+// Worker Message : Peers Identification Poll (pi)
+typedef struct wmsg_pi_s {
+    int32_t     wid;
+    int32_t     tid;
+    int32_t     num;
+    char        *uname;
+} wmsg_pi_t;
+
+// Server Message : User Re-Connect (nuc)
 typedef struct smsg_urc_s {
     int32_t     uid;
     int32_t     poll_id;
 } smsg_urc_t;
 
+// Server Message :  Worker Re-Connect (wrc)
 typedef struct smsg_wrc_s {
     int32_t     wid;
     int32_t     poll_id;
@@ -115,9 +127,16 @@ typedef struct smsg_wrc_s {
 typedef struct smsg_ts_s {
     int32_t     tid;
     int32_t     stg_num;
+    int32_t     total_stg;
     char        *func;
-    char        *tname;
 } smsg_ts_t;
+
+// Server Message : Worker Peer Identification (wpi)
+typedef struct smsg_wpi_s {
+    int32_t     pid;
+    char        *peer_addr;
+    int32_t     peer_port;
+} smsg_wpi_t;
 
 typedef struct tmsg_file_s {
     char    *buf;
@@ -204,7 +223,7 @@ static inline int32_t __int8_t_encode_array(void *_buf, uint32_t offset, uint32_
     if (maxlen < n_ele)
         return -1;
 
-    char    *buf = (char *) _buf;
+    uint8_t    *buf = (uint8_t *) _buf;
 
     memcpy(&buf[offset], p, n_ele);
 
@@ -216,7 +235,7 @@ static inline int32_t __int8_t_decode_array(const void *_buf, uint32_t offset, u
     if (maxlen < n_ele)
         return -1;
 
-    char    *buf = (char *) _buf;
+    uint8_t    *buf = (uint8_t *) _buf;
 
     memcpy(p, &buf[offset], n_ele);
 
@@ -251,7 +270,7 @@ static inline int32_t __int16_t_encode_array(void *_buf, uint32_t offset, uint32
     uint32_t        total_size = (__INT16_NUM_BYTES__ * n_ele);
     uint32_t        pos = offset;
     uint32_t        i;
-    char            *buf = (char *) _buf;
+    uint8_t            *buf = (uint8_t *) _buf;
     const uint16_t  *unsigned_p = (uint16_t *)p;
 
     if (maxlen < total_size)
@@ -269,7 +288,7 @@ static inline int32_t __int16_t_encode_array(void *_buf, uint32_t offset, uint32
 static inline int32_t __int16_t_decode_array(const void *_buf, uint32_t offset, uint32_t maxlen,
                                              int16_t *p, uint32_t n_ele) {
     u_int32_t   total_size = (__INT16_NUM_BYTES__ * n_ele);
-    char        *buf = (char *) _buf;
+    uint8_t        *buf = (uint8_t *) _buf;
     uint32_t    pos = offset;
     uint32_t    i;
 
@@ -289,7 +308,7 @@ static inline int32_t __int16_t_encode_little_endian_array(void *_buf, uint32_t 
     uint32_t        total_size = (__INT16_NUM_BYTES__ * n_ele);
     uint32_t        pos = offset;
     uint32_t        i;
-    char            *buf = (char *) _buf;
+    uint8_t            *buf = (uint8_t *) _buf;
     const uint16_t  *unsigned_p = (uint16_t *)p;
 
     if (maxlen < total_size) return -1;
@@ -306,7 +325,7 @@ static inline int32_t __int16_t_encode_little_endian_array(void *_buf, uint32_t 
 static inline int32_t __int16_t_decode_little_endian_array(const void *_buf, uint32_t offset, uint32_t maxlen,
                                                            int16_t *p, uint32_t n_ele) {
     uint32_t    total_size = (__INT16_NUM_BYTES__ * n_ele);
-    char        *buf = (char *) _buf;
+    uint8_t        *buf = (uint8_t *) _buf;
     uint32_t    pos = offset;
     uint32_t    i;
 
@@ -338,7 +357,7 @@ static inline int32_t __int32_t_encode_array(void *_buf, uint32_t offset, uint32
     uint32_t        total_size = (__INT32_NUM_BYTES__ * n_ele);
     uint32_t        pos = offset;
     uint32_t        i;
-    char            *buf = (char *) _buf;
+    uint8_t            *buf = (uint8_t *) _buf;
     const uint32_t * unsigned_msg = (uint32_t *)msg;
 
     if (maxlen < total_size) return -1;
@@ -357,7 +376,7 @@ static inline int32_t __int32_t_encode_array(void *_buf, uint32_t offset, uint32
 static inline int32_t __int32_t_decode_array(const void *_buf, uint32_t offset, uint32_t maxlen,
                                          int32_t *msg, uint32_t n_ele) {
     uint32_t    total_size = (__INT32_NUM_BYTES__ * n_ele);
-    char        *buf = (char *) _buf;
+    uint8_t        *buf = (uint8_t *) _buf;
     uint32_t    pos = offset;
     uint32_t    i;
 
@@ -380,7 +399,7 @@ static inline int32_t __int32_t_encode_little_endian_array(void *_buf, uint32_t 
     uint32_t        total_size = (__INT32_NUM_BYTES__ * n_ele);
     uint32_t        pos = offset;
     uint32_t        i;
-    char            *buf = (char *) _buf;
+    uint8_t            *buf = (uint8_t *) _buf;
     const uint32_t  *unsigned_p = (uint32_t*)p;
 
     if (maxlen < total_size)
@@ -401,7 +420,7 @@ static inline int32_t __int32_t_decode_little_endian_array(const void *_buf, uin
     uint32_t    total_size = (__INT32_NUM_BYTES__ * n_ele);
     uint32_t    pos = offset;
     uint32_t    i;
-    char        *buf = (char *) _buf;
+    uint8_t        *buf = (uint8_t *) _buf;
 
     if (maxlen < total_size)
         return -1;
@@ -433,7 +452,7 @@ static inline uint32_t __int64_t_encoded_array_sz(const int64_t *p, uint32_t n_e
 
 static inline int32_t __int64_t_encode_array(void *_buf, uint32_t offset, uint32_t maxlen, const int64_t *p, uint32_t n_ele) {
     uint32_t total_size = __INT64_NUM_BYTES__ * n_ele;
-    char *buf = (char *) _buf;
+    uint8_t *buf = (uint8_t *) _buf;
     uint32_t pos = offset;
     uint32_t i;
 
@@ -457,7 +476,7 @@ static inline int32_t __int64_t_encode_array(void *_buf, uint32_t offset, uint32
 
 static inline int32_t __int64_t_decode_array(const void *_buf, uint32_t offset, uint32_t maxlen, int64_t *p, uint32_t n_ele) {
     uint32_t total_size = __INT64_NUM_BYTES__ * n_ele;
-    char *buf = (char *) _buf;
+    uint8_t *buf = (uint8_t *) _buf;
     uint32_t pos = offset;
     uint32_t i;
 
@@ -482,7 +501,7 @@ static inline int32_t __int64_t_decode_array(const void *_buf, uint32_t offset, 
 
 static inline int32_t __int64_t_encode_little_endian_array(void *_buf, uint32_t offset, uint32_t maxlen, const int64_t *p, uint32_t n_ele) {
     uint32_t total_size = __INT64_NUM_BYTES__ * n_ele;
-    char *buf = (char *) _buf;
+    uint8_t *buf = (uint8_t *) _buf;
     uint32_t pos = offset;
     uint32_t i;
 
@@ -506,7 +525,7 @@ static inline int32_t __int64_t_encode_little_endian_array(void *_buf, uint32_t 
 
 static inline int32_t __int64_t_decode_little_endian_array(const void *_buf, uint32_t offset, uint32_t maxlen, int64_t *p, uint32_t n_ele) {
     uint32_t total_size = __INT64_NUM_BYTES__ * n_ele;
-    char *buf = (char *) _buf;
+    uint8_t *buf = (uint8_t *) _buf;
     uint32_t pos = offset;
     uint32_t i;
 
@@ -918,7 +937,9 @@ int32_t __umsg_rc_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, um
 uint32_t __wmsg_nc_t_encoded_sz(const wmsg_nc_t *msg) {
     uint32_t    sz = 0;
 
+    sz += __int32_t_encoded_array_sz(&(msg->peer_port), 1);
     sz += __string_encoded_array_sz(&(msg->uname), 1);
+    sz += __string_encoded_array_sz(&(msg->peer_addr), 1);
 
     return sz;
 }
@@ -927,7 +948,14 @@ int32_t __wmsg_nc_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const wm
     uint32_t    pos = 0;
     int32_t     len;
 
+    len = __int32_t_encode_array(buf, offset + pos, maxlen - pos,
+                                               &(msg->peer_port), 1);
+    if (len < 0) return len; else pos += len;
+
     len = __string_encode_array(buf, offset + pos, maxlen - pos, &(msg->uname), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __string_encode_array(buf, offset + pos, maxlen - pos, &(msg->peer_addr), 1);
     if (len < 0) return len; else pos += len;
 
     return pos;
@@ -937,7 +965,14 @@ int32_t __wmsg_nc_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, wm
     uint32_t    pos = 0;
     int32_t     len;
 
+    len = __int32_t_decode_array(buf, offset + pos, maxlen - pos,
+                                               &(msg->peer_port), 1);
+    if (len < 0) return len; else pos += len;
+
     len = __string_decode_array(buf, offset + pos, maxlen - pos, &(msg->uname), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __string_decode_array(buf, offset + pos, maxlen - pos, &(msg->peer_addr), 1);
     if (len < 0) return len; else pos += len;
 
     return pos;
@@ -1005,6 +1040,55 @@ int32_t __wmsg_tr_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, wm
     int32_t     len;
 
     len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->wid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __string_decode_array(buf, offset + pos, maxlen - pos, &(msg->uname), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+uint32_t __wmsg_pi_t_encoded_sz(const wmsg_pi_t *msg) {
+    uint32_t    sz = 0;
+
+    sz += __int32_t_encoded_array_sz(&(msg->wid), 1);
+    sz += __int32_t_encoded_array_sz(&(msg->tid), 1);
+    sz += __int32_t_encoded_array_sz(&(msg->num), 1);
+    sz += __string_encoded_array_sz(&(msg->uname), 1);
+
+    return sz;
+}
+
+int32_t __wmsg_pi_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const wmsg_pi_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->wid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->tid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->num), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __string_encode_array(buf, offset + pos, maxlen - pos, &(msg->uname), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t __wmsg_pi_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, wmsg_pi_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->wid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->tid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->num), 1);
     if (len < 0) return len; else pos += len;
 
     len = __string_decode_array(buf, offset + pos, maxlen - pos, &(msg->uname), 1);
@@ -1083,11 +1167,54 @@ int32_t __smsg_wrc_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, s
     return pos;
 }
 
+uint32_t __smsg_wpi_t_encoded_sz(const smsg_wpi_t *msg) {
+    uint32_t    sz = 0;
+
+    sz += __int32_t_encoded_array_sz(&(msg->pid), 1);
+    sz += __int32_t_encoded_array_sz(&(msg->peer_port), 1);
+    sz += __string_encoded_array_sz(&(msg->peer_addr), 1);
+
+    return sz;
+}
+
+int32_t __smsg_wpi_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const smsg_wpi_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->pid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __string_encode_array(buf, offset + pos, maxlen - pos, &(msg->peer_addr), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->peer_port), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t __smsg_wpi_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, smsg_wpi_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->pid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __string_decode_array(buf, offset + pos, maxlen - pos, &(msg->peer_addr), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->peer_port), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
 uint32_t __smsg_ts_t_encoded_sz(const smsg_ts_t *msg) {
     uint32_t    sz = 0;
 
     sz += __int32_t_encoded_array_sz(&(msg->tid), 1);
     sz += __int32_t_encoded_array_sz(&(msg->stg_num), 1);
+    sz += __int32_t_encoded_array_sz(&(msg->total_stg), 1);
     sz += __string_encoded_array_sz(&(msg->func), 1);
 
     return sz;
@@ -1106,6 +1233,9 @@ int32_t __smsg_ts_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const sm
     len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->stg_num), 1);
     if (len < 0) return len; else pos += len;
 
+    len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->total_stg), 1);
+    if (len < 0) return len; else pos += len;
+
     return pos;
 }
 
@@ -1120,6 +1250,9 @@ int32_t __smsg_ts_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, sm
     if (len < 0) return len; else pos += len;
 
     len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->stg_num), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->total_stg), 1);
     if (len < 0) return len; else pos += len;
 
     return pos;
@@ -1369,6 +1502,31 @@ int32_t wmsg_tr_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, wmsg
     return pos;
 }
 
+/* Worker Peer Identification */
+uint32_t wmsg_pi_t_encoded_sz (const wmsg_pi_t *msg) {
+    return 8 + __wmsg_pi_t_encoded_sz(msg);
+}
+
+int32_t wmsg_pi_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const wmsg_pi_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __wmsg_pi_t_encode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t wmsg_pi_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, wmsg_pi_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __wmsg_pi_t_decode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
 /* Server User Reconnect Reply */
 uint32_t smsg_urc_t_encoded_sz (const smsg_urc_t *msg) {
     return 8 + __smsg_urc_t_encoded_sz(msg);
@@ -1414,6 +1572,31 @@ int32_t smsg_wrc_t_decode(const void* buf, uint32_t offset, uint32_t maxlen, sms
     int32_t     len;
 
     len = __smsg_wrc_t_decode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+/* Server Worker Peer Identification */
+uint32_t smsg_wpi_t_encoded_sz (const smsg_wpi_t *msg) {
+    return 8 + __smsg_wpi_t_encoded_sz(msg);
+}
+
+int32_t smsg_wpi_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const smsg_wpi_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __smsg_wpi_t_encode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t smsg_wpi_t_decode(const void* buf, uint32_t offset, uint32_t maxlen, smsg_wpi_t* msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __smsg_wpi_t_decode(buf, offset + pos, maxlen - pos, msg);
     if (len < 0) return len; else pos += len;
 
     return pos;

@@ -18,14 +18,16 @@ user_t * get_user_from_sockfd(server_t *srvr, int32_t sockfd) {
     return NULL;
 }
 
-void close_user_connection(server_t *srvr, int32_t sockfd, int32_t poll_id, user_t *u) {
+void close_user_connection(server_t *srvr, int32_t sockfd,
+                           int32_t poll_id, user_t *u) {
 
     srvr->n_clients--;
     close(sockfd);
     srvr->poller[poll_id].fd = -1;
 
     if (NULL == u) {
-        avd_log_info("Cleared stale\n\tsockfd : %d\n\tpoll_id : %d", sockfd, poll_id);
+        avd_log_info("Cleared stale\n\tsockfd : %d\n\tpoll_id : %d",
+                     sockfd, poll_id);
         return;
     }
 
@@ -38,11 +40,12 @@ void close_user_connection(server_t *srvr, int32_t sockfd, int32_t poll_id, user
 }
 
 //TODO : Break this into smaller functions
-int32_t process_user_msg(server_t *srvr, int32_t sockfd, message_t *msg, user_t *u) {
-
+int32_t process_user_msg(server_t *srvr, int32_t sockfd,
+                         message_t *msg, user_t *u) {
     int32_t     i, j, rc = -1;
     size_t      sz;
     size_t      smsg_sz;
+    int32_t     data_sz;
     message_t   res;
 
     memset(&res, 0, sizeof(res));
@@ -80,8 +83,8 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd, message_t *msg, user_t 
             nc_smsg.poll_id = u->poll_id;
 
             smsg_sz = smsg_urc_t_encoded_sz(&nc_smsg);
-            smsg_urc_t_encode(res.buf, 0, smsg_sz, &nc_smsg);
-            res.hdr.size = msg_sz(smsg_urc_t);
+            data_sz = smsg_urc_t_encode(res.buf, 0, smsg_sz, &nc_smsg);
+            res.hdr.size = MSG_HDR_SZ + data_sz;
 
             if (NULL == (dir = get_or_create_user_dir(u->uname))) {
                 avd_log_error("Failed to create the task directory");
@@ -114,7 +117,8 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd, message_t *msg, user_t 
             avd_log_debug("RCON Msg ::: Uname : %s | Uid : %d", m.uname, m.uid);
 
             if (!user_exists_s_sess(m.uname)) {
-                avd_log_error("Failed to find user session with reconnect name %d", m.uname);
+                avd_log_error("Reconnect User session with name %s not found",
+                              m.uname);
                 return -1;
             }
 
@@ -122,7 +126,8 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd, message_t *msg, user_t 
             u->uname = (char *)malloc(strlen(m.uname)+1);
             snprintf(u->uname, strlen(m.uname)+1, "%s", m.uname);
 
-            update_user_s_sess(m.uname, "poll_id", cJSON_CreateNumber(u->poll_id));
+            update_user_s_sess(m.uname, "poll_id",
+                               cJSON_CreateNumber(u->poll_id));
 
             set_msg_type(res.hdr.type, AVD_MSG_F_RE_CON);
             res.hdr.seq_no = 1;
@@ -132,8 +137,8 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd, message_t *msg, user_t 
             rc_smsg.poll_id = u->poll_id;
 
             smsg_sz = smsg_urc_t_encoded_sz(&rc_smsg);
-            smsg_urc_t_encode(res.buf, 0, smsg_sz, &rc_smsg);
-            res.hdr.size = msg_sz(smsg_urc_t);
+            data_sz = smsg_urc_t_encode(res.buf, 0, smsg_sz, &rc_smsg);
+            res.hdr.size = MSG_HDR_SZ + data_sz;
 
             if (NULL == (dir = get_or_create_user_dir(u->uname))) {
                 avd_log_error("Failed to create the task directory");
@@ -181,25 +186,39 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd, message_t *msg, user_t 
 
             u->tasks[i].id = u->num_tasks + 1;
             u->num_tasks += 1;
-            update_user_s_sess(u->uname, "num_tasks", cJSON_CreateNumber(u->num_tasks));
+            update_user_s_sess(u->uname, "num_tasks",
+                               cJSON_CreateNumber(u->num_tasks));
 
-            cJSON_AddItemToObject(new_task, "id", cJSON_CreateNumber(task.id));
+            cJSON_AddItemToObject(new_task, "id",
+                                  cJSON_CreateNumber(task.id));
 
             snprintf(task.name, MAX_TASK_NAME_SZ, "%s", tmsg.task_name);
-            cJSON_AddItemToObject(new_task, "name", cJSON_CreateString(task.name));
+            cJSON_AddItemToObject(new_task, "name",
+                                  cJSON_CreateString(task.name));
 
-            snprintf(task.filename, MAX_FILE_NAME_SZ, "%s/%s", u->dir, TASK_FILE);
-            cJSON_AddItemToObject(new_task, "bin_file", cJSON_CreateString(task.filename));
+            snprintf(task.filename, MAX_FILE_NAME_SZ,
+                     "%s/%s", u->dir, TASK_FILE);
+            cJSON_AddItemToObject(new_task, "bin_file",
+                                  cJSON_CreateString(task.filename));
 
-            snprintf(task.input_file, MAX_FILE_NAME_SZ, "%s/%s", u->dir, INPUT_FILE );
-            cJSON_AddItemToObject(new_task, "input_file", cJSON_CreateString(task.input_file));
+            snprintf(task.input_file, MAX_FILE_NAME_SZ,
+                     "%s/%s", u->dir, INPUT_FILE );
+            cJSON_AddItemToObject(new_task, "input_file",
+                                  cJSON_CreateString(task.input_file));
 
             task.num_stages = tmsg.num_stages;
-            cJSON_AddItemToObject(new_task, "num_stages", cJSON_CreateNumber(task.num_stages));
+            cJSON_AddItemToObject(new_task, "num_stages",
+                                  cJSON_CreateNumber(task.num_stages));
 
             task.num_unassigned_stages = task.num_stages;
             cJSON_AddItemToObject(new_task, "unassigned_stages",
                                   cJSON_CreateNumber(task.num_unassigned_stages));
+
+            cJSON_AddItemToObject(new_task, "peers_ready",
+                                  cJSON_CreateNumber(0));
+
+            cJSON_AddItemToObject(new_task, "peers_identified",
+                                  cJSON_CreateFalse());
 
             for (j = 0; j < task.num_stages; j++) {
 #define stage task.stages[j]
@@ -222,7 +241,7 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd, message_t *msg, user_t 
             }
             cJSON_AddItemToObject(new_task, "stages", stage_arr);
 
-            add_user_task_s_sess(u->uname, new_task);
+            add_task_s_sess(u->uname, new_task);
 #undef task
             break;
         }
@@ -411,7 +430,7 @@ int32_t connect_user(server_t *srvr) {
     int32_t             i, j, rc = 0;
     int32_t             nready;
     int32_t             user_fd;
-    socklen_t           user_addr_sz;
+    socklen_t           sz;
     struct sockaddr_in  user_addr;
     conn_info_t         *s_conn = &srvr->conn;
     user_t              *u;
@@ -421,13 +440,11 @@ int32_t connect_user(server_t *srvr) {
     nready = poll(u_poll, srvr->curr_poll_sz + 1, INFTIM);
 
     if (u_poll[0].revents & POLLRDNORM) {
-
-        user_addr_sz = sizeof(user_addr);
-
-        user_fd = accept(s_conn->sockfd, (struct sockaddr *)&user_addr, &user_addr_sz);
+        sz = sizeof(user_addr);
+        user_fd = accept(s_conn->sockfd, (struct sockaddr *)&user_addr, &sz);
         if (user_fd < 0) {
             rc = -errno;
-            avd_log_error("User Accept connection failed: %s\n", strerror(errno));
+            avd_log_error("User Accept connection failed: %s", strerror(errno));
             goto bail;
         }
 
@@ -453,15 +470,15 @@ int32_t connect_user(server_t *srvr) {
                 u->file_seq_no = 1;
                 u->conn.sockfd = user_fd;
                 u->poll_id = i;
-                u->conn.port = sock_ntop_port((struct sockaddr *)&user_addr);
-                snprintf(u->conn.ip_addr_s, INET_ADDRSTRLEN, "%s",
-                         sock_ntop_addr((struct sockaddr *)&user_addr));
+                u->conn.port = sock_ntop_port(&user_addr);
+                snprintf(u->conn.addr, INET_ADDRSTRLEN, "%s",
+                         sock_ntop_addr(&user_addr));
 
                 srvr->n_clients += 1;
 
                 avd_log_info("New User connected: %s",
-                              sock_ntop((struct sockaddr *)&user_addr));
-                avd_log_debug("\tUser Info:\n\t\tsockfd : %d\n\t\tpoll_id : %d",
+                              sock_ntop(&user_addr));
+                avd_log_debug("\tUser Info:\n\t\tsockfd: %d\n\t\tpoll_id: %d",
                                u->conn.sockfd, u->poll_id);
                 break;
             }
@@ -470,7 +487,7 @@ int32_t connect_user(server_t *srvr) {
 #undef user_poll
 
         if (i == srvr->max_poll_sz) {
-            avd_log_warn("Too many Users connected\n");
+            avd_log_warn("Too many Users connected");
             memset(u, 0, sizeof(user_t));
             goto bail;
         }

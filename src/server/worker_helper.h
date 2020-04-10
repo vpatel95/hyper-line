@@ -57,6 +57,7 @@ int32_t task_poll_response_not_ready(int32_t sockfd) {
 int32_t task_poll_response_ready(worker_t *w, int32_t sockfd, int32_t idx) {
     int32_t     k, rc;
     int32_t     smsg_sz;
+    int32_t     data_sz;
     message_t   res;
     smsg_ts_t   smsg;
     cJSON       *task = cJSON_CreateObject();
@@ -72,6 +73,9 @@ int32_t task_poll_response_ready(worker_t *w, int32_t sockfd, int32_t idx) {
     cJSON *tid = get_task_field_by_idx_s_sess(w->uname, idx, "id");
     w->tid = tid->valueint;
     smsg.tid = w->tid;
+
+    cJSON *total_stg = get_task_field_by_idx_s_sess(w->uname, idx, "num_stages");
+    smsg.total_stg = total_stg->valueint;
 
     cJSON_AddItemToObject(task, "id", cJSON_CreateNumber(smsg.tid));
 
@@ -111,6 +115,10 @@ int32_t task_poll_response_ready(worker_t *w, int32_t sockfd, int32_t idx) {
             update_task_field_by_idx_s_sess(w->uname, idx, "unassigned_stages",
                                             cJSON_CreateNumber(v->valueint - 1));
 
+            v = get_task_field_by_idx_s_sess(w->uname, idx, "peers_ready");
+            update_task_field_by_idx_s_sess(w->uname, idx, "peers_ready",
+                                            cJSON_CreateNumber(v->valueint + 1));
+
             v = get_user_field_s_sess(w->uname, "unassigned_workers");
             update_user_s_sess(w->uname, "unassigned_workers", cJSON_CreateNumber(v->valueint-1));
 
@@ -123,11 +131,13 @@ int32_t task_poll_response_ready(worker_t *w, int32_t sockfd, int32_t idx) {
     update_worker_s_sess(w->id, "assigned", cJSON_CreateTrue());
 
     smsg_sz = smsg_ts_t_encoded_sz(&smsg);
-    smsg_ts_t_encode(res.buf, 0, smsg_sz, &smsg);
+    data_sz = smsg_ts_t_encode(res.buf, 0, smsg_sz, &smsg);
 
     set_msg_type(res.hdr.type, AVD_MSG_F_TASK_POLL_TR);
-    res.hdr.size = msg_sz(smsg_ts_t);
+    res.hdr.size = MSG_HDR_SZ + data_sz;
     res.hdr.seq_no = 1;
+
+    avd_log_debug("Send task ready of size : %d", data_sz);
 
     if (0 > (rc = send(sockfd, &res, res.hdr.size, 0))) {
         avd_log_error("Send error: %s\n", strerror(errno));
@@ -137,10 +147,12 @@ bail:
     return rc;
 }
 
+//TODO: break this into smaller functions
 int32_t process_worker_msg(server_t *srvr, int32_t sockfd, message_t *msg, worker_t *w) {
     int32_t     rc = -1;
     size_t      sz;
     size_t      smsg_sz;
+    int32_t     data_sz;
     message_t   res;
 
     memset(&res, 0, sizeof(res));
@@ -161,16 +173,22 @@ int32_t process_worker_msg(server_t *srvr, int32_t sockfd, message_t *msg, worke
                 }
             }
 
-            wmsg_nc_t_decode(msg->buf, 0, sizeof(msg->buf), &m);
+            avd_log_debug("DC_SZ: %d | AC_SZ : %d", sizeof(msg->buf), sz);
+            wmsg_nc_t_decode(msg->buf, 0, sz, &m);
 
-            avd_log_debug("NCON Msg ::: Name : %s | Size : %ld", m.uname, sz);
+            avd_log_debug("NCON Msg ::: Size : %ld\n\tName : %s\n\tPeer %s:%d",
+                          sz, m.uname, m.peer_addr, m.peer_port);
+
+
+            w->uname = (char *)malloc(strlen(m.uname)+1);
+            snprintf(w->uname, strlen(m.uname)+1, "%s", m.uname);
+
+            w->ps.port = m.peer_port;
+            snprintf(w->ps.addr, strlen(m.peer_addr)+1, "%s", m.peer_addr);
 
             if (0 > (rc = add_worker_s_sess(srvr, w, m.uname))) {
                 return rc;
             }
-
-            w->uname = (char *)malloc(strlen(m.uname)+1);
-            snprintf(w->uname, strlen(m.uname)+1, "%s", m.uname);
 
             set_msg_type(res.hdr.type, AVD_MSG_F_NEW_CON);
             res.hdr.seq_no = 1;
@@ -179,8 +197,8 @@ int32_t process_worker_msg(server_t *srvr, int32_t sockfd, message_t *msg, worke
             nc_smsg.poll_id = w->poll_id;
 
             smsg_sz = smsg_wrc_t_encoded_sz(&nc_smsg);
-            smsg_wrc_t_encode(res.buf, 0, smsg_sz, &nc_smsg);
-            res.hdr.size = msg_sz(smsg_wrc_t);
+            data_sz = smsg_wrc_t_encode(res.buf, 0, smsg_sz, &nc_smsg);
+            res.hdr.size = MSG_HDR_SZ + data_sz;
 
             if (NULL == (dir = get_or_create_worker_dir(w))) {
                 avd_log_error("Failed to create the worker directory");
@@ -229,10 +247,10 @@ int32_t process_worker_msg(server_t *srvr, int32_t sockfd, message_t *msg, worke
             rc_smsg.poll_id = w->poll_id;
 
             smsg_sz = smsg_wrc_t_encoded_sz(&rc_smsg);
-            smsg_wrc_t_encode(res.buf, 0, smsg_sz, &rc_smsg);
+            data_sz = smsg_wrc_t_encode(res.buf, 0, smsg_sz, &rc_smsg);
 
             set_msg_type(res.hdr.type, AVD_MSG_F_RE_CON);
-            res.hdr.size = msg_sz(smsg_wrc_t);
+            res.hdr.size = MSG_HDR_SZ + data_sz;
             res.hdr.seq_no = 1;
 
             if (NULL == (dir = get_or_create_worker_dir(w))) {
@@ -282,6 +300,71 @@ int32_t process_worker_msg(server_t *srvr, int32_t sockfd, message_t *msg, worke
             if (i == num_tasks) {
                 task_poll_response_not_ready(sockfd);
             }
+
+            break;
+        }
+        case AVD_MSG_F_PEER_ID: {
+            wmsg_pi_t   m;
+            int32_t     data_sz;
+            int32_t     peers_ready;
+            int32_t     num_stages;
+            cJSON       *v = NULL;
+            smsg_wpi_t  smsg;
+
+            if (0 < (sz = msg->hdr.size - MSG_HDR_SZ)) {
+                if (0 > (rc = recv_avd_msg(sockfd, msg->buf, sz))) {
+                    return rc;
+                }
+            }
+
+            wmsg_pi_t_decode(msg->buf, 0, sizeof(msg->buf), &m);
+            avd_log_debug("Peer Identification Msg ::: Wid : %d | Uname : %s", m.wid, m.uname);
+
+            v = get_task_field_by_id_s_sess(w->uname, w->tid, "peers_ready");
+            peers_ready = v->valueint;
+
+            v = get_task_field_by_id_s_sess(m.uname, m.tid, "num_stages");
+            num_stages = v->valueint;
+
+            if (num_stages == peers_ready) {
+                if (m.num > 1 && m.num <= num_stages) {
+                    avd_log_debug("Worker Num : %d", m.num);
+                    cJSON *p = get_worker_peer(m.uname, m.tid, m.num);
+
+                    cJSON *v = cJSON_GetObjectItem(p, "addr");
+                    smsg.peer_addr = (char *)malloc(strlen(v->valuestring)+1);
+                    snprintf(smsg.peer_addr, strlen(v->valuestring)+1, "%s", v->valuestring);
+
+                    v = cJSON_GetObjectItem(p, "port");
+                    smsg.peer_port = v->valueint;
+
+                    v = cJSON_GetObjectItem(p, "id");
+                    smsg.pid = v->valueint;
+
+                    smsg_sz = smsg_wpi_t_encoded_sz(&smsg);
+                    data_sz = smsg_wpi_t_encode(res.buf, 0, smsg_sz, &smsg);
+
+                    set_msg_type(res.hdr.type, AVD_MSG_F_PEER_ID_TR);
+                    res.hdr.size = MSG_HDR_SZ + data_sz;
+                } else {
+                    avd_log_debug("Unexpected Worker Num : %d", m.num);
+                    set_msg_type(res.hdr.type, AVD_MSG_F_PEER_ID_FL);
+                    res.hdr.size = MSG_HDR_SZ;
+                }
+            } else {
+                set_msg_type(res.hdr.type, AVD_MSG_F_PEER_ID_FL);
+                res.hdr.size = MSG_HDR_SZ;
+            }
+
+            res.hdr.seq_no = 1;
+
+            if (0 > (rc = send(sockfd, &res, res.hdr.size, 0))) {
+                avd_log_error("Send error Peer ID True: %s", strerror(errno));
+                return rc;
+            }
+
+            avd_log_debug("Send peer identification message of sz : %d",
+                          res.hdr.size);
 
             break;
         }
@@ -366,7 +449,7 @@ int32_t connect_worker(server_t *srvr) {
 
         for (j = 0; j < MAX_WORKER; j++) {
             if (srvr->workers[j].id == 0) {
-                w= &srvr->workers[j];
+                w = &srvr->workers[j];
                 break;
             }
         }
@@ -386,15 +469,15 @@ int32_t connect_worker(server_t *srvr) {
                 w->file_seq_no = 1;
                 w->conn.sockfd = worker_fd;
                 w->poll_id = i;
-                w->conn.port = sock_ntop_port((struct sockaddr *)&worker_addr);
-                snprintf(w->conn.ip_addr_s, INET_ADDRSTRLEN, "%s",
-                         sock_ntop_addr((struct sockaddr *)&worker_addr));
+                w->conn.port = sock_ntop_port(&worker_addr);
+                snprintf(w->conn.addr, INET_ADDRSTRLEN, "%s",
+                         sock_ntop_addr(&worker_addr));
 
                 srvr->n_clients += 1;
 
                 avd_log_info("New Worker connected: %s",
-                              sock_ntop((struct sockaddr *)&worker_addr));
-                avd_log_debug("\tWorker Info:\n\t\tsockfd : %d\n\t\tpoll_id : %d",
+                              sock_ntop(&worker_addr));
+                avd_log_debug("\tWorker Info:\n\t\tsockfd: %d\n\t\tpoll_id: %d",
                                w->conn.sockfd, w->poll_id);
                 break;
             }
@@ -418,8 +501,4 @@ int32_t connect_worker(server_t *srvr) {
 
 bail:
     return rc;
-}
-
-int32_t worker_task_dispatch_poll() {
-    return 0;
 }

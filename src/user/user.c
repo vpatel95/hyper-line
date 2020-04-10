@@ -19,6 +19,7 @@ int32_t send_tasks(user_t *user) {
         }
 
         int32_t     tmsg_sz;
+        int32_t     data_sz;
         message_t   msg;
         tmsg_args_t tmsg;
 
@@ -38,10 +39,10 @@ int32_t send_tasks(user_t *user) {
         }
 
         tmsg_sz = tmsg_args_t_encoded_sz(&tmsg);
-        tmsg_args_t_encode(msg.buf, 0, tmsg_sz, &tmsg);
+        data_sz = tmsg_args_t_encode(msg.buf, 0, tmsg_sz, &tmsg);
 
         set_msg_type(msg.hdr.type, AVD_MSG_F_TASK);
-        msg.hdr.size = msg_sz(tmsg);
+        msg.hdr.size = MSG_HDR_SZ + data_sz;
         msg.hdr.seq_no = 1;
 
         rc = send(conn->sockfd, &msg, msg.hdr.size, 0);
@@ -110,6 +111,7 @@ void server_communication (user_t *user) {
 int32_t reconnect(user_t *user) {
     int32_t         rc = -1;
     int32_t         umsg_sz;
+    int32_t         data_sz;
     int32_t         sz;
     message_t       msg;
     message_t       rmsg;
@@ -126,10 +128,10 @@ int32_t reconnect(user_t *user) {
     snprintf(umsg.uname, strlen(user->uname)+1, "%s", user->uname);
 
     umsg_sz = umsg_rc_t_encoded_sz(&umsg);
-    umsg_rc_t_encode(msg.buf, 0, umsg_sz, &umsg);
+    data_sz = umsg_rc_t_encode(msg.buf, 0, umsg_sz, &umsg);
 
     set_msg_type(msg.hdr.type, AVD_MSG_F_RE_CON);
-    msg.hdr.size = msg_sz(umsg_rc_t);
+    msg.hdr.size = MSG_HDR_SZ + data_sz;
 
     if(0 > (rc = send(conn->sockfd, &msg, msg.hdr.size, 0))) {
         avd_log_error("Send error: %s\n", strerror(errno));
@@ -167,6 +169,7 @@ bail:
 int32_t new_connection(user_t *user) {
     int32_t         rc = -1;
     int32_t         umsg_sz;
+    int32_t         data_sz;
     int32_t         sz;
     message_t       msg;
     message_t       rmsg;
@@ -183,8 +186,8 @@ int32_t new_connection(user_t *user) {
     snprintf(umsg.uname, strlen(user->uname)+1, "%s", user->uname);
 
     umsg_sz = umsg_nc_t_encoded_sz(&umsg);
-    umsg_nc_t_encode(msg.buf, 0, umsg_sz, &umsg);
-    msg.hdr.size = msg_sz(umsg_nc_t);
+    data_sz = umsg_nc_t_encode(msg.buf, 0, umsg_sz, &umsg);
+    msg.hdr.size = MSG_HDR_SZ + data_sz;
 
     rc = send(conn->sockfd, &msg, msg.hdr.size, 0);
     if (rc < 0) {
@@ -226,21 +229,21 @@ int32_t connect_server(user_t *user) {
 
     conn->sockfd = user_init();
 
-    if (0 == (rc = inet_pton(AF_INET, conn->ip_addr_s, &srvr_addr.sin_addr.s_addr))) {
+    if (0 == (rc = inet_pton(AF_INET, conn->addr, &srvr_addr.sin_addr.s_addr))) {
         avd_log_error("Server IP inet_pton error:%s", strerror(errno));
         goto bail;
     }
     srvr_addr.sin_family = AF_INET;
     srvr_addr.sin_port = htons(conn->port);
 
-    avd_log_debug("Connecting to server on %s:%d", conn->ip_addr_s, conn->port);
+    avd_log_debug("Connecting to server on %s:%d", conn->addr, conn->port);
     if (0 > (rc = connect(conn->sockfd, (struct sockaddr *)&srvr_addr, sizeof(srvr_addr)))) {
         avd_log_fatal("Error connecting to the server at \"%s:%d\" : %s",
-                conn->ip_addr_s, conn->port, strerror(errno));
+                conn->addr, conn->port, strerror(errno));
         goto bail;
     }
 
-    avd_log_info("Connected to server on %s", sock_ntop((struct sockaddr *)&srvr_addr));
+    avd_log_info("Connected to server on %s", sock_ntop(&srvr_addr));
 
     if (0 != (rc = check_and_get_u_sess(user))) {
         new_connection(user);

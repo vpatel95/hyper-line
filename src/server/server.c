@@ -4,8 +4,8 @@
 #include "avd_session.h"
 #include "avd_message.h"
 
-#include "server/user.h"
-#include "server/worker.h"
+#include "user_helper.h"
+#include "worker_helper.h"
 
 #define num_threads         2
 #define init_processing     0
@@ -18,29 +18,26 @@ uint32_t                        g_start_processing = init_processing;
 extern avd_server_session_t     g_srvr_session;
 
 int32_t server_init(conn_info_t *conn, int32_t type) {
-
     int32_t             rc;
     struct sockaddr_in  srvr_addr;
 
-    conn->sockfd = get_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-
-    if (conn->sockfd < 0) {
+    if (0 > (conn->sockfd = get_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP))) {
         rc = -errno;
-        avd_log_error("%s Server socket setup failed: %s\n",
-                CLIENT_TYPE(type), strerror(-rc));
-
+        avd_log_error("%s Server socket setup failed: %s",
+                CLIENT_TYPE(type), strerror(errno));
         return rc;
     }
 
-    rc = inet_pton(AF_INET, conn->ip_addr_s, &srvr_addr.sin_addr.s_addr);
+    rc = inet_pton(AF_INET, conn->addr, &srvr_addr.sin_addr.s_addr);
     if (rc == 0) {
-        avd_log_error("%s Server IP invalid format: %s\n",
+        rc = -errno;
+        avd_log_error("%s Server IP invalid format: %s",
                 CLIENT_TYPE(type), strerror(errno));
         goto bail;
     }
 
     if (rc < 0) {
-        avd_log_error("%s Server IP inet_pton error: %s\n",
+        avd_log_error("%s Server IP inet_pton error: %s",
                 CLIENT_TYPE(type), strerror(errno));
 
         goto bail;
@@ -51,7 +48,7 @@ int32_t server_init(conn_info_t *conn, int32_t type) {
 
     rc = bind(conn->sockfd, (struct sockaddr*)&srvr_addr, sizeof(srvr_addr));
     if (rc < 0) {
-        avd_log_error("%s Server socket bind error: %s\n",
+        avd_log_error("%s Server socket bind error: %s",
                 CLIENT_TYPE(type), strerror(errno));
 
         goto bail;
@@ -59,14 +56,14 @@ int32_t server_init(conn_info_t *conn, int32_t type) {
 
     rc = listen(conn->sockfd, 3);
     if (rc < 0) {
-        avd_log_error("%s Server socket listen failed: %s\n",
+        avd_log_error("%s Server socket listen failed: %s",
                 CLIENT_TYPE(type), strerror(errno));
 
         goto bail;
     }
 
     avd_log_info("%s Server listening on %s:%d", CLIENT_TYPE(type),
-                  conn->ip_addr_s, conn->port);
+                  conn->addr, conn->port);
 
     return 0;
 
@@ -75,20 +72,13 @@ bail:
     return rc;
 }
 
-static void * start_server(void * args) {
+static void * server_routine(void * arg) {
 
     int32_t         i, rc;
-    args_t          *arg = (args_t *) args;
-
-    server_t        *srvr = &arg->srvr;
-    uint16_t        port = arg->port;
+    server_t        *srvr = (server_t *)(arg);
     conn_info_t     *conn = &srvr->conn;
 
-    snprintf(conn->ip_addr_s, INET_ADDRSTRLEN, "%s", arg->addr);
-    conn->port = port;
-
-    rc = server_init(conn, srvr->type);
-    if (rc < 0) {
+    if (0 > (rc = server_init(conn, srvr->type))) {
         avd_log_error("Server init failed: %s", strerror(errno));
         close(conn->sockfd);
         exit(EXIT_FAILURE);
@@ -177,13 +167,10 @@ int32_t main (int32_t argc, char const *argv[]) {
 #define u_thrd              threads[0]
 #define w_thrd              threads[1]
 #define s_thrd              threads[2]
-    conf_parse_info_t       cfg;
-    args_t                  args[2];
-#define u_args              args[0]
-#define w_args              args[1]
     server_t                srvr[2];
 #define u_srvr              srvr[0]
 #define w_srvr              srvr[1]
+    conf_parse_info_t       cfg;
 
     if (argc < 2) {
         print("Usage %s <run-time>\n", basename((char *)argv[0]));
@@ -206,28 +193,24 @@ int32_t main (int32_t argc, char const *argv[]) {
     setup_logger(cfg.sconf.log_ufile, cfg.sconf.log_level, cfg.sconf.log_quiet);
 
     u_srvr.type = USER;
+    u_srvr.conn.port = cfg.sconf.uport;
+    snprintf(u_srvr.conn.addr, INET_ADDRSTRLEN, "%s", cfg.sconf.addr);
+
     w_srvr.type = WORKER;
-    w_srvr.max_poll_sz = MAX_WORKER_POLL;
+    w_srvr.conn.port = cfg.sconf.wport;
+    snprintf(w_srvr.conn.addr, INET_ADDRSTRLEN, "%s", cfg.sconf.addr);
 
-    u_args.srvr = u_srvr;
-    snprintf(u_args.addr,INET_ADDRSTRLEN, "%s", cfg.sconf.addr);
-    u_args.port = cfg.sconf.uport;
-
-    w_args.srvr = w_srvr;
-    snprintf(w_args.addr,INET_ADDRSTRLEN, "%s", cfg.sconf.addr);
-    w_args.port = cfg.sconf.wport;
-
-    if (0 != pthread_create(&u_thrd, NULL, start_server, (void *)&u_args)) {
+    if (0 != pthread_create(&u_thrd, NULL, server_routine, &u_srvr)) {
         avd_log_fatal("User server thread creation failed");
         exit(EXIT_FAILURE);
     }
-    pthread_setname_np(u_thrd, "avd_user_server");
+    pthread_setname_np(u_thrd, "avds_user");
 
-    if (0 != pthread_create(&w_thrd, NULL, start_server, (void *)&w_args)) {
+    if (0 != pthread_create(&w_thrd, NULL, server_routine, &w_srvr)) {
         avd_log_fatal("Worker server thread creation failed");
         exit(EXIT_FAILURE);
     }
-    pthread_setname_np(w_thrd, "avd_worker_server");
+    pthread_setname_np(w_thrd, "avds_worker");
 
     while (all_threads_ready != *(volatile uint32_t *)&g_start_processing) {
         usleep(10);

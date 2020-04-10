@@ -86,6 +86,11 @@ int32_t build_server_sess() {
         sess->root = cJSON_CreateObject();
         if (!sess->root) goto bail;
 
+        cJSON *update_id = cJSON_CreateNumber(0);
+        if (!update_id) goto bail;
+
+        cJSON_AddItemToObject(sess->root, "update_id", update_id);
+
         cJSON *u_arr = cJSON_CreateArray();
         if (!u_arr) goto bail;
 
@@ -155,37 +160,27 @@ bail:
     return rc;
 }
 
-/* SERVER : User Session Helpers */
-int32_t get_max_user_id_s_sess() {
-    int max_id = 1;
-    int32_t                 i;
-    avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
+void increment_update_id(cJSON *root) {
+    cJSON *v = NULL;
 
-    if (!sess->root) {
-        if (0 != build_server_sess()) {
-            avd_log_error("Failed to build server session");
-            goto bail;
-        }
+    v = cJSON_GetObjectItem(root, "update_id");
+    if (!v) {
+        avd_log_error("Cannot increment the update_id in the server config");
+        return;
     }
 
-    for (i = 0; i < sess->num_users; i++) {
-        avd_user_session_t  *usess = &sess->usess[i];
+    cJSON_ReplaceItemInObject(root, "update_id", cJSON_CreateNumber(v->valueint + 1));
 
-        cJSON *v = cJSON_GetObjectItem(usess->root, "id");
-        if ((!v) || (!v->valueint)) {
-            avd_log_debug("cannot extract 'id' from user object");
-            goto bail;
-        }
-
-        if (v->valueint > max_id) {
-            max_id = v->valueint;
-        }
+    if (0 != write_to_sess_file(root)) {
+        return;
     }
 
-bail:
-    return max_id;
+    build_server_sess();
+
+    return;
 }
 
+/* SERVER : User Session Helpers */
 bool user_exists_s_sess(char *uname) {
     int32_t                 i;
     avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
@@ -208,6 +203,54 @@ bool user_exists_s_sess(char *uname) {
 
         if (0 == strcmp(v->valuestring, uname)) {
             return true;
+        }
+    }
+
+bail:
+    return false;
+}
+
+bool task_exists_s_sess (char *uname, char *name) {
+    int32_t                 i, j;
+    cJSON                   *v = NULL;
+    avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
+
+    if (uname == NULL || name == NULL) {
+        avd_log_error("Invalid params received");
+        goto bail;
+    }
+
+    if (!sess->root) {
+        if (0 != build_server_sess()) {
+            avd_log_error("Failed to build server session");
+            goto bail;
+        }
+    }
+
+    for (i = 0; i < sess->num_users; i++) {
+        avd_user_session_t  *usess = &sess->usess[i];
+
+        v = cJSON_GetObjectItem(usess->root, "uname");
+        if ((!v) || (!v->valuestring)) {
+            avd_log_debug("cannot extract 'uname' from user object");
+            goto bail;
+        }
+
+        if (0 == strcmp(v->valuestring, uname)) {
+            for (j = 0; j < usess->num_tasks; j++) {
+#define task usess->tsess[j]
+
+                v = cJSON_GetObjectItem(task.root, "name");
+                if ((!v) || (!v->valuestring)) {
+                    avd_log_error("Malformed task in session file");
+                    goto bail;
+                }
+
+                if (0 == strcmp(name, v->valuestring)) {
+                    return true;
+                }
+#undef task
+            }
         }
     }
 
@@ -260,6 +303,8 @@ int32_t add_user_s_sess(server_t *srvr, user_t *u, char *uname) {
     cJSON_AddItemToObject(user, "tasks", tasks);
     cJSON_AddItemToArray(u_arr, user);
 
+    increment_update_id(sess->root);
+
     if (0 != write_to_sess_file(sess->root)) {
         goto bail;
     }
@@ -274,55 +319,7 @@ bail:
     return rc;
 }
 
-bool task_exists_s_sess (char *uname, char *name) {
-    int32_t                 i, j;
-    cJSON                   *v = NULL;
-    avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
-
-    if (uname == NULL || name == NULL) {
-        avd_log_error("Invalid params received");
-        goto bail;
-    }
-
-    if (!sess->root) {
-        if (0 != build_server_sess()) {
-            avd_log_error("Failed to build server session");
-            goto bail;
-        }
-    }
-
-    for (i = 0; i < sess->num_users; i++) {
-        avd_user_session_t  *usess = &sess->usess[i];
-
-        v = cJSON_GetObjectItem(usess->root, "uname");
-        if ((!v) || (!v->valuestring)) {
-            avd_log_debug("cannot extract 'uname' from user object");
-            goto bail;
-        }
-
-        if (0 == strcmp(v->valuestring, uname)) {
-            for (j = 0; j < usess->num_tasks; j++) {
-#define task usess->tsess[j]
-
-                v = cJSON_GetObjectItem(task.root, "name");
-                if ((!v) || (!v->valuestring)) {
-                    avd_log_error("Malformed task in session file");
-                    goto bail;
-                }
-
-                if (0 == strcmp(name, v->valuestring)) {
-                    return true;
-                }
-#undef task
-            }
-        }
-    }
-
-bail:
-    return false;
-}
-
-int32_t add_user_task_s_sess(char *uname, cJSON *task) {
+int32_t add_task_s_sess(char *uname, cJSON *task) {
     int32_t                 i, rc = -1;
     cJSON                   *v = NULL;
     avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
@@ -352,17 +349,50 @@ int32_t add_user_task_s_sess(char *uname, cJSON *task) {
             cJSON *task_arr = cJSON_GetObjectItem(usess->root, "tasks");
             cJSON_AddItemToArray(task_arr, task);
 
+            increment_update_id(sess->root);
+
             if (0 != write_to_sess_file(sess->root)) {
                 goto bail;
             }
 
             build_server_sess();
+
             return 0;
         }
     }
 
 bail:
     return rc;
+}
+
+int32_t get_max_user_id_s_sess() {
+    int max_id = 1;
+    int32_t                 i;
+    avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
+
+    if (!sess->root) {
+        if (0 != build_server_sess()) {
+            avd_log_error("Failed to build server session");
+            goto bail;
+        }
+    }
+
+    for (i = 0; i < sess->num_users; i++) {
+        avd_user_session_t  *usess = &sess->usess[i];
+
+        cJSON *v = cJSON_GetObjectItem(usess->root, "id");
+        if ((!v) || (!v->valueint)) {
+            avd_log_debug("cannot extract 'id' from user object");
+            goto bail;
+        }
+
+        if (v->valueint > max_id) {
+            max_id = v->valueint;
+        }
+    }
+
+bail:
+    return max_id;
 }
 
 int32_t get_user_task_num_s_sess(char *uname) {
@@ -426,7 +456,7 @@ int32_t get_user_unassigned_worker_num_s_sess(char *uname) {
 
         if (0 == strcmp(v->valuestring, uname)) {
             v = cJSON_GetObjectItem(usess->root, "unassigned_workers");
-            if ((!v) || (!v->valueint)) {
+            if (!v) {
                 avd_log_debug("cannot extract 'unassigned_workers' from user object");
                 goto bail;
             }
@@ -526,10 +556,16 @@ bail:
     return obj;
 }
 
-int32_t update_task_field_by_idx_s_sess(char *uname, int32_t tidx, char *field, cJSON *val) {
-    int32_t                 i, rc = -1;
+cJSON * get_task_field_by_id_s_sess (char *uname, int32_t tid, char *field) {
+    int32_t                 i, j;
     cJSON                   *v = NULL;
+    cJSON                   *obj = NULL;
     avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
+
+    if (uname == NULL || field == NULL) {
+        avd_log_error("Invalid params received");
+        goto bail;
+    }
 
     if (!sess->root) {
         if (0 != build_server_sess()) {
@@ -548,60 +584,30 @@ int32_t update_task_field_by_idx_s_sess(char *uname, int32_t tidx, char *field, 
         }
 
         if (0 == strcmp(v->valuestring, uname)) {
+            for (j = 0; j < usess->num_tasks; j++) {
+#define task usess->tsess[j]
 
-            if (tidx >= usess->num_tasks) {
-                goto bail;
-            }
+                v = cJSON_GetObjectItem(task.root, "id");
+                if ((!v) || (!v->valueint)) {
+                    avd_log_error("Malformed task in session file");
+                    goto bail;
+                }
 
-#define task usess->tsess[tidx]
-            cJSON_ReplaceItemInObject(task.root, field, val);
-            return 0;
+                if (tid == v->valueint) {
+                    obj = cJSON_GetObjectItem(task.root, field);
+                    if (!obj) {
+                        avd_log_error("Cannot find field '%s' in task session", field);
+                        goto bail;
+                    }
+                    return obj;
+                }
 #undef task
+            }
         }
     }
 
 bail:
-    return rc;
-}
-
-int32_t update_stage_field_by_idx_s_sess(char *uname, int32_t tidx, int32_t sidx, char *field, cJSON *val) {
-    int32_t                 i, rc = -1;
-    cJSON                   *v = NULL;
-    avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
-
-    if (!sess->root) {
-        if (0 != build_server_sess()) {
-            avd_log_error("Failed to build server session");
-            goto bail;
-        }
-    }
-
-    for (i = 0; i < sess->num_users; i++) {
-        avd_user_session_t  *usess = &sess->usess[i];
-
-        v = cJSON_GetObjectItem(usess->root, "uname");
-        if ((!v) || (!v->valuestring)) {
-            avd_log_debug("cannot extract 'uname' from user object");
-            goto bail;
-        }
-
-        if (0 == strcmp(v->valuestring, uname)) {
-
-            if (tidx >= usess->num_tasks) {
-                goto bail;
-            }
-
-#define task usess->tsess[tidx]
-#define stage task.stg_sess[sidx]
-            cJSON_ReplaceItemInObject(stage.root, field, val);
-            return 0;
-#undef stage
-#undef task
-        }
-    }
-
-bail:
-    return rc;
+    return NULL;
 }
 
 cJSON * get_user_field_s_sess(char *uname, char *field) {
@@ -627,6 +633,48 @@ cJSON * get_user_field_s_sess(char *uname, char *field) {
 
         if (0 == strcmp(uname, v->valuestring)) {
             return cJSON_GetObjectItem(usess->root, field);
+        }
+    }
+
+bail:
+    return NULL;
+}
+
+cJSON * get_worker_peer(char *uname, int32_t tid, int32_t snum) {
+    int32_t                 i;
+    cJSON                   *v = NULL;
+    avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
+
+    if (!sess->root) {
+        if (0 != build_server_sess()) {
+            avd_log_error("Failed tp build server session");
+            goto bail;
+        }
+    }
+
+    for (i = 0; i < sess->num_workers; i++) {
+        avd_worker_session_t    *wsess = &sess->wsess[i];
+
+        v = cJSON_GetObjectItem(wsess->root, "uname");
+
+        if (0 != strcmp(uname, v->valuestring)) {
+            continue;
+        }
+
+        cJSON *task = cJSON_GetObjectItem(wsess->root, "task");
+        if (!task) goto bail;
+
+        v = cJSON_GetObjectItem(task, "id");
+
+        if (tid == v->valueint) {
+
+            cJSON *num = cJSON_GetObjectItem(task, "stg_num");
+            if (!num) goto bail;
+
+            if ((snum - 1) == num->valueint) {
+                cJSON *peer = cJSON_GetObjectItem(wsess->root, "peer");
+                return peer;
+            }
         }
     }
 
@@ -663,15 +711,179 @@ int32_t update_user_s_sess(char *uname, char *field, cJSON *value) {
         if (0 == strcmp(uname, v->valuestring)) {
             cJSON_ReplaceItemInObject(usess->root, field, value);
 
+            increment_update_id(sess->root);
+
             if (0 != write_to_sess_file(sess->root)) {
                 goto bail;
             }
 
-            break;
+            build_server_sess();
+
+            return 0;
         }
     }
 
-    rc = 0;
+bail:
+    return rc;
+}
+
+int32_t update_task_field_by_idx_s_sess(char *uname, int32_t tidx, char *field, cJSON *val) {
+    int32_t                 i, rc = -1;
+    cJSON                   *v = NULL;
+    avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
+
+    if (!sess->root) {
+        if (0 != build_server_sess()) {
+            avd_log_error("Failed to build server session");
+            goto bail;
+        }
+    }
+
+    for (i = 0; i < sess->num_users; i++) {
+        avd_user_session_t  *usess = &sess->usess[i];
+
+        v = cJSON_GetObjectItem(usess->root, "uname");
+        if ((!v) || (!v->valuestring)) {
+            avd_log_debug("cannot extract 'uname' from user object");
+            goto bail;
+        }
+
+        if (0 == strcmp(v->valuestring, uname)) {
+
+            if (tidx >= usess->num_tasks) {
+                goto bail;
+            }
+
+#define task usess->tsess[tidx]
+            cJSON_ReplaceItemInObject(task.root, field, val);
+
+            increment_update_id(sess->root);
+
+            if (0 != write_to_sess_file(sess->root)) {
+                goto bail;
+            }
+
+            build_server_sess();
+
+            return 0;
+#undef task
+        }
+    }
+
+bail:
+    return rc;
+}
+
+cJSON * get_stage_field_by_id_s_sess (char *uname, int32_t tid, int32_t snum, char *field) {
+    int32_t                 i, j, k;
+    cJSON                   *v = NULL;
+    cJSON                   *obj = NULL;
+    avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
+
+    if (uname == NULL || field == NULL) {
+        avd_log_error("Invalid params received");
+        goto bail;
+    }
+
+    if (!sess->root) {
+        if (0 != build_server_sess()) {
+            avd_log_error("Failed to build server session");
+            goto bail;
+        }
+    }
+
+    for (i = 0; i < sess->num_users; i++) {
+        avd_user_session_t  *usess = &sess->usess[i];
+
+        v = cJSON_GetObjectItem(usess->root, "uname");
+        if ((!v) || (!v->valuestring)) {
+            avd_log_debug("cannot extract 'uname' from user object");
+            goto bail;
+        }
+
+        if (0 == strcmp(v->valuestring, uname)) {
+            for (j = 0; j < usess->num_tasks; j++) {
+#define task usess->tsess[j]
+
+                v = cJSON_GetObjectItem(task.root, "id");
+                if ((!v) || (!v->valueint)) {
+                    avd_log_error("Malformed task in session file");
+                    goto bail;
+                }
+
+                if (tid == v->valueint) {
+                    for (k = 0; k < task.num_stages; k++) {
+#define stage task.stg_sess[k]
+                        v = cJSON_GetObjectItem(stage.root, "num");
+                        if ((!v) || (!v->valueint)) {
+                            avd_log_error("Malformed task in session file");
+                            goto bail;
+                        }
+
+                        if (snum == v->valueint) {
+                            obj = cJSON_GetObjectItem(stage.root, field);
+                            if (!obj) {
+                                avd_log_error("Cannot find field '%s' in stage session", field);
+                                goto bail;
+                            }
+                            return obj;
+                        }
+#undef stage
+                    }
+                }
+#undef task
+            }
+        }
+    }
+
+bail:
+    return NULL;
+}
+
+int32_t update_stage_field_by_idx_s_sess(char *uname, int32_t tidx, int32_t sidx, char *field, cJSON *val) {
+    int32_t                 i, rc = -1;
+    cJSON                   *v = NULL;
+    avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
+
+    if (!sess->root) {
+        if (0 != build_server_sess()) {
+            avd_log_error("Failed to build server session");
+            goto bail;
+        }
+    }
+
+    for (i = 0; i < sess->num_users; i++) {
+        avd_user_session_t  *usess = &sess->usess[i];
+
+        v = cJSON_GetObjectItem(usess->root, "uname");
+        if ((!v) || (!v->valuestring)) {
+            avd_log_debug("cannot extract 'uname' from user object");
+            goto bail;
+        }
+
+        if (0 == strcmp(v->valuestring, uname)) {
+
+            if (tidx >= usess->num_tasks) {
+                goto bail;
+            }
+
+#define task usess->tsess[tidx]
+#define stage task.stg_sess[sidx]
+            cJSON_ReplaceItemInObject(stage.root, field, val);
+
+            increment_update_id(sess->root);
+
+            if (0 != write_to_sess_file(sess->root)) {
+                goto bail;
+            }
+
+            build_server_sess();
+
+            return 0;
+#undef stage
+#undef task
+        }
+    }
 
 bail:
     return rc;
@@ -712,9 +924,13 @@ int32_t remove_user_s_sess(char *uname) {
         if (0 == strcmp(v->valuestring, uname)) {
             cJSON_DeleteItemFromArray(uobj_arr, i);
 
+            increment_update_id(sess->root);
+
             if (0 != write_to_sess_file(sess->root)) {
                 goto bail;
             }
+
+            build_server_sess();
 
             break;
         }
@@ -727,36 +943,6 @@ bail:
 }
 
 /* SERVER : Worker Session Helpers */
-int32_t get_max_worker_id_s_sess() {
-    int max_id = 1;
-    int32_t                 i;
-    avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
-
-    if (!sess->root) {
-        if (0 != build_server_sess()) {
-            avd_log_error("Failed to build server session");
-            goto bail;
-        }
-    }
-
-    for (i = 0; i < sess->num_workers; i++) {
-        avd_worker_session_t  *wsess = &sess->wsess[i];
-
-        cJSON *v = cJSON_GetObjectItem(wsess->root, "id");
-        if ((!v) || (!v->valueint)) {
-            avd_log_debug("cannot extract 'id' from user object");
-            goto bail;
-        }
-
-        if (v->valueint > max_id) {
-            max_id = v->valueint;
-        }
-    }
-
-bail:
-    return max_id;
-}
-
 bool worker_exists_s_sess(int32_t wid) {
     int32_t                 i;
     avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
@@ -787,13 +973,14 @@ bail:
     return false;
 }
 
-int32_t add_worker_s_sess (server_t *srvr, worker_t *wrkr, char *uname) {
+int32_t add_worker_s_sess (server_t *srvr, worker_t *w, char *uname) {
     int32_t                 rc = -1;
     cJSON                   *w_arr = NULL;
-    cJSON                   *w = NULL;
+    cJSON                   *wrkr = NULL;
     cJSON                   *w_id = NULL;
     cJSON                   *w_uname = NULL;
     cJSON                   *assigned = NULL;
+    cJSON                   *peer = NULL;
     cJSON                   *task = NULL;
     cJSON                   *sub_task = NULL;
     avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
@@ -807,8 +994,8 @@ int32_t add_worker_s_sess (server_t *srvr, worker_t *wrkr, char *uname) {
 
     w_arr = cJSON_GetObjectItem(sess->root, "workers");
 
-    w = cJSON_CreateObject();
-    if (!w) goto bail;
+    wrkr = cJSON_CreateObject();
+    if (!wrkr) goto bail;
 
     w_id = cJSON_CreateNumber(srvr->new_client_id);
     if (!w_id) goto bail;
@@ -822,25 +1009,111 @@ int32_t add_worker_s_sess (server_t *srvr, worker_t *wrkr, char *uname) {
     task = cJSON_CreateObject();
     if (!task) goto bail;
 
-    cJSON_AddItemToObject(w, "id", w_id);
-    cJSON_AddItemToObject(w, "uname", w_uname);
-    cJSON_AddItemToObject(w, "assigned", assigned);
-    cJSON_AddItemToObject(w, "task", task);
-    cJSON_AddItemToObject(w, "sub_task_id", sub_task);
-    cJSON_AddItemToArray(w_arr, w);
+    peer = cJSON_CreateObject();
+    if (!peer) goto bail;
+
+    cJSON_AddItemToObject(peer, "id", cJSON_CreateNumber(w_id->valueint));
+    cJSON_AddItemToObject(peer, "addr", cJSON_CreateString(w->ps.addr));
+    cJSON_AddItemToObject(peer, "port", cJSON_CreateNumber(w->ps.port));
+
+    cJSON_AddItemToObject(wrkr, "id", w_id);
+    cJSON_AddItemToObject(wrkr, "uname", w_uname);
+    cJSON_AddItemToObject(wrkr, "assigned", assigned);
+    cJSON_AddItemToObject(wrkr, "task", task);
+    cJSON_AddItemToObject(wrkr, "peer", peer);
+    cJSON_AddItemToObject(wrkr, "sub_task_id", sub_task);
+    cJSON_AddItemToArray(w_arr, wrkr);
+
+    cJSON *v = get_user_field_s_sess(uname, "unassigned_workers");
+    update_user_s_sess(uname, "unassigned_workers", cJSON_CreateNumber(v->valueint+1));
+
+    increment_update_id(sess->root);
 
     if (0 != write_to_sess_file(sess->root)) {
         goto bail;
     }
 
-    cJSON *v = get_user_field_s_sess(uname, "unassigned_workers");
-    update_user_s_sess(uname, "unassigned_workers", cJSON_CreateNumber(v->valueint+1));
-
     build_server_sess();
 
-    wrkr->id = srvr->new_client_id++;
+    w->id = srvr->new_client_id++;
 
     rc = 0;
+
+bail:
+    return rc;
+}
+
+int32_t get_max_worker_id_s_sess() {
+    int max_id = 1;
+    int32_t                 i;
+    avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
+
+    if (!sess->root) {
+        if (0 != build_server_sess()) {
+            avd_log_error("Failed to build server session");
+            goto bail;
+        }
+    }
+
+    for (i = 0; i < sess->num_workers; i++) {
+        avd_worker_session_t  *wsess = &sess->wsess[i];
+
+        cJSON *v = cJSON_GetObjectItem(wsess->root, "id");
+        if ((!v) || (!v->valueint)) {
+            avd_log_debug("cannot extract 'id' from user object");
+            goto bail;
+        }
+
+        if (v->valueint > max_id) {
+            max_id = v->valueint;
+        }
+    }
+
+bail:
+    return max_id;
+}
+
+int32_t update_worker_s_sess(int32_t wid, char *field, cJSON *value) {
+    int32_t                 i, rc = -1;
+    cJSON                   *v = NULL;
+    avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
+
+    if(!value) {
+        avd_log_error("Failed to update session. value is empty");
+        goto bail;
+    }
+
+    if (!sess->root) {
+        if (0 != build_server_sess()) {
+            avd_log_error("Failed to build server session");
+            goto bail;
+        }
+    }
+
+    for (i = 0; i < sess->num_workers; i++) {
+        avd_worker_session_t  *wsess = &sess->wsess[i];
+
+        v = cJSON_GetObjectItem(wsess->root, "id");
+        if ((!v) || (!v->valueint)) {
+            avd_log_debug("cannot extract 'id' from worker object");
+            goto bail;
+        }
+
+        if (wid == v->valueint) {
+            cJSON_ReplaceItemInObject(wsess->root, field, value);
+
+            increment_update_id(sess->root);
+
+            if (0 != write_to_sess_file(sess->root)) {
+                goto bail;
+            }
+
+            build_server_sess();
+
+            return 0;
+
+        }
+    }
 
 bail:
     return rc;
@@ -881,58 +1154,17 @@ int32_t remove_worker_s_sess(int32_t wid) {
         if (v->valueint == wid) {
             cJSON_DeleteItemFromArray(wobj_arr, i);
 
-            if (0 != write_to_sess_file(sess->root)) {
-                goto bail;
-            }
-
-            break;
-        }
-    }
-
-    build_server_sess();
-    rc = 0;
-bail:
-    return rc;
-}
-
-int32_t update_worker_s_sess(int32_t wid, char *field, cJSON *value) {
-    int32_t                 i, rc = -1;
-    cJSON                   *v = NULL;
-    avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
-
-    if(!value) {
-        avd_log_error("Failed to update session. value is empty");
-        goto bail;
-    }
-
-    if (!sess->root) {
-        if (0 != build_server_sess()) {
-            avd_log_error("Failed to build server session");
-            goto bail;
-        }
-    }
-
-    for (i = 0; i < sess->num_workers; i++) {
-        avd_worker_session_t  *wsess = &sess->wsess[i];
-
-        v = cJSON_GetObjectItem(wsess->root, "id");
-        if ((!v) || (!v->valueint)) {
-            avd_log_debug("cannot extract 'id' from worker object");
-            goto bail;
-        }
-
-        if (wid == v->valueint) {
-            cJSON_ReplaceItemInObject(wsess->root, field, value);
+            increment_update_id(sess->root);
 
             if (0 != write_to_sess_file(sess->root)) {
                 goto bail;
             }
 
-            break;
+            build_server_sess();
+
+            return 0;
         }
     }
-
-    rc = 0;
 
 bail:
     return rc;
@@ -1173,7 +1405,7 @@ bail:
 }
 
 /* WORKER Session Helpers */
-int32_t get_worker_w_sess(worker_t *wrkr) {
+int32_t get_worker_w_sess(worker_t *w) {
     cJSON                   *v = NULL;
     int32_t                 rc = -1;
     avd_worker_session_t    *sess = (avd_worker_session_t *)&g_wrkr_session;
@@ -1195,14 +1427,65 @@ int32_t get_worker_w_sess(worker_t *wrkr) {
         avd_log_error("Failed to find 'id' in session file");
         goto bail;
     }
-    wrkr->id = v->valueint;
+    w->id = v->valueint;
 
     v = cJSON_GetObjectItem(sess->root, "poll_id");
     if ((!v) || (!v->valueint)) {
         avd_log_error("Failed to find 'poll_id' in session file");
         goto bail;
     }
-    wrkr->poll_id = v->valueint;
+    w->poll_id = v->valueint;
+
+    w->peer_id = cJSON_IsTrue(cJSON_GetObjectItem(sess->root, "peer_id"));
+
+    cJSON *tobj = cJSON_GetObjectItem(sess->root, "task");
+    if (!tobj) goto bail;
+
+    v = cJSON_GetObjectItem(tobj, "id");
+    if ((!v) || (!v->valueint)) {
+        avd_log_error("Failed to find task id in session");
+        goto bail;
+    }
+    w->tid = v->valueint;
+
+    v = cJSON_GetObjectItem(tobj, "num");
+    if ((!v) || (!v->valueint)) {
+        avd_log_error("Failed to find task num in session");
+        goto bail;
+    }
+    w->stg_num = v->valueint;
+
+    v = cJSON_GetObjectItem(tobj, "func");
+    if ((!v) || (!v->valuestring)) {
+        avd_log_error("Failed to find task func in session");
+        goto bail;
+    }
+    w->func = (char *)malloc(strlen(v->valuestring)+1);
+    snprintf(w->func, strlen(v->valuestring)+1, "%s", v->valuestring);
+
+    cJSON *pobj = cJSON_GetObjectItem(sess->root, "peer_server");
+    if (!pobj) goto bail;
+
+    v = cJSON_GetObjectItem(pobj, "pid");
+    if ((!v) || (!v->valueint)) {
+        avd_log_error("Failed to find task id in session");
+        goto bail;
+    }
+    w->ps_id = v->valueint;
+
+    v = cJSON_GetObjectItem(pobj, "port");
+    if ((!v) || (!v->valueint)) {
+        avd_log_error("Failed to find task num in session");
+        goto bail;
+    }
+    w->ps.port = v->valueint;
+
+    v = cJSON_GetObjectItem(pobj, "addr");
+    if ((!v) || (!v->valuestring)) {
+        avd_log_error("Failed to find task func in session");
+        goto bail;
+    }
+    snprintf(w->ps.addr, strlen(v->valuestring)+1, "%s", v->valuestring);
 
     rc = 0;
 
@@ -1210,11 +1493,11 @@ bail:
     return rc;
 }
 
-int32_t check_and_get_w_sess(worker_t *wrkr) {
+int32_t check_and_get_w_sess(worker_t *w) {
     int32_t     rc = -1;
     if (file_exists(SESSION_FILE, F_OK)) {
-        if (0 != (rc = get_worker_w_sess(wrkr))) {
-            avd_log_fatal("Failed to restore user session");
+        if (0 != (rc = get_worker_w_sess(w))) {
+            avd_log_fatal("Failed to restore worker session");
             exit(EXIT_FAILURE);
         }
         rc = 0;
@@ -1223,7 +1506,7 @@ int32_t check_and_get_w_sess(worker_t *wrkr) {
     return rc;
 }
 
-int32_t create_worker_w_sess(worker_t *worker) {
+int32_t create_worker_w_sess(worker_t *w) {
     int32_t                 rc = -1;
     cJSON                   *w_id = NULL;
     cJSON                   *poll_id = NULL;
@@ -1235,20 +1518,22 @@ int32_t create_worker_w_sess(worker_t *worker) {
         sess->root = cJSON_CreateObject();
         if (!sess->root) goto bail;
 
-        w_id = cJSON_CreateNumber(worker->id);
+        w_id = cJSON_CreateNumber(w->id);
         if (!w_id) goto bail;
 
-        poll_id = cJSON_CreateNumber(worker->poll_id);
+        poll_id = cJSON_CreateNumber(w->poll_id);
         if (!poll_id) goto bail;
 
         cJSON *task = cJSON_CreateObject();
+        cJSON *peer = cJSON_CreateObject();
 
-        cJSON_AddItemToObject(task, "name", cJSON_CreateString(worker->tname));
-        cJSON_AddItemToObject(task, "rcvd", cJSON_CreateFalse());
-
+        cJSON_AddItemToObject(sess->root, "update_id", cJSON_CreateNumber(0));
         cJSON_AddItemToObject(sess->root, "id", w_id);
+        cJSON_AddItemToObject(sess->root, "type", cJSON_CreateNumber(0));
         cJSON_AddItemToObject(sess->root, "poll_id", poll_id);
+        cJSON_AddItemToObject(sess->root, "peer_id", cJSON_CreateFalse());
         cJSON_AddItemToObject(sess->root, "task", task);
+        cJSON_AddItemToObject(sess->root, "peer_server", peer);
     }
 
     if (0 != write_to_sess_file(sess->root)) {
@@ -1284,6 +1569,8 @@ int32_t update_worker_w_sess(char *field, cJSON *value) {
 
     cJSON_ReplaceItemInObject(sess->root, field, value);
 
+    increment_update_id(sess->root);
+
     if (0 != write_to_sess_file(sess->root)) {
         goto bail;
     }
@@ -1292,6 +1579,106 @@ int32_t update_worker_w_sess(char *field, cJSON *value) {
 
 bail:
     return rc;
+}
+
+/* WORKER: Peer Session Helpers */
+bool is_peer_id_w_sess() {
+    avd_worker_session_t    *sess = (avd_worker_session_t *)&g_wrkr_session;
+
+    if (!sess->root) {
+        if (file_exists(SESSION_FILE, F_OK)) {
+            if (NULL == (sess->root = parse_json(SESSION_FILE))) {
+                avd_log_error("Failed parsing JSON config");
+                goto bail;
+            }
+        } else {
+            avd_log_error("Failed to locate config file");
+            goto bail;
+        }
+    }
+
+    return cJSON_IsTrue(cJSON_GetObjectItem(sess->root, "peer_id"));
+
+bail:
+    return false;
+}
+
+int32_t get_worker_id_w_sess() {
+    avd_worker_session_t    *sess = (avd_worker_session_t *)&g_wrkr_session;
+
+    if (!sess->root) {
+        if (file_exists(SESSION_FILE, F_OK)) {
+            if (NULL == (sess->root = parse_json(SESSION_FILE))) {
+                avd_log_error("Failed parsing JSON config");
+                goto bail;
+            }
+        } else {
+            avd_log_error("Failed to locate config file");
+            goto bail;
+        }
+    }
+
+    cJSON *v = cJSON_GetObjectItem(sess->root, "id");
+    if ((!v) || (!v->valueint)) {
+        goto bail;
+    }
+
+    return v->valueint;
+
+bail:
+    return -1;
+}
+
+int32_t get_worker_type_w_sess() {
+    avd_worker_session_t    *sess = (avd_worker_session_t *)&g_wrkr_session;
+
+    if (!sess->root) {
+        if (file_exists(SESSION_FILE, F_OK)) {
+            if (NULL == (sess->root = parse_json(SESSION_FILE))) {
+                avd_log_error("Failed parsing JSON config");
+                goto bail;
+            }
+        } else {
+            avd_log_error("Failed to locate config file");
+            goto bail;
+        }
+    }
+
+    cJSON *v = cJSON_GetObjectItem(sess->root, "type");
+    if ((!v) || (!v->valueint)) {
+        goto bail;
+    }
+
+    return v->valueint;
+
+bail:
+    return -1;
+}
+
+cJSON * get_peer_server_w_sess() {
+    avd_worker_session_t    *sess = (avd_worker_session_t *)&g_wrkr_session;
+
+    if (!sess->root) {
+        if (file_exists(SESSION_FILE, F_OK)) {
+            if (NULL == (sess->root = parse_json(SESSION_FILE))) {
+                avd_log_error("Failed parsing JSON config");
+                goto bail;
+            }
+        } else {
+            avd_log_error("Failed to locate config file");
+            goto bail;
+        }
+    }
+
+    cJSON *obj = cJSON_GetObjectItem(sess->root, "peer_server");
+    if (!obj) {
+        goto bail;
+    }
+
+    return obj;
+
+bail:
+    return NULL;
 }
 
 #endif

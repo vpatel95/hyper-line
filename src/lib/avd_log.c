@@ -3,6 +3,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <time.h>
+#include <stdbool.h>
 
 #include "avd_log.h"
 
@@ -33,8 +34,8 @@ void set_log_level(int32_t level) {
     }
 }
 
-void set_log_quiet(int32_t quiet) {
-    avd_logger.quiet = quiet ? 1 : 0;
+void set_log_quiet(bool quiet) {
+    avd_logger.quiet = (quiet == true) ? 1 : 0;
 }
 
 void avd_log (int32_t level, const char *file, int32_t line, const char *fmt, ...) {

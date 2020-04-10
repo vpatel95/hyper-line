@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <inttypes.h>
+#include <stdbool.h>
 
 enum {
     LOG_DEBUG,
@@ -24,7 +25,7 @@ enum {
 
 void set_log_file(char *fname);
 void set_log_level(int32_t level);
-void set_log_quiet(int32_t quiet);
+void set_log_quiet(bool quiet);
 void avd_log (int32_t level, const char *file, int32_t line, const char *fmt,...);
 
 #endif

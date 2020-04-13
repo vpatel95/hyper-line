@@ -1485,6 +1485,7 @@ int32_t get_worker_w_sess(worker_t *w) {
         avd_log_error("Failed to find task func in session");
         goto bail;
     }
+    w->ps.addr = (char *)malloc(strlen(v->valuestring)+1);
     snprintf(w->ps.addr, strlen(v->valuestring)+1, "%s", v->valuestring);
 
     rc = 0;
@@ -1508,8 +1509,7 @@ int32_t check_and_get_w_sess(worker_t *w) {
 
 int32_t create_worker_w_sess(worker_t *w) {
     int32_t                 rc = -1;
-    cJSON                   *w_id = NULL;
-    cJSON                   *poll_id = NULL;
+    cJSON                   *v = NULL;
     avd_worker_session_t    *sess = (avd_worker_session_t *)&g_wrkr_session;
 
     if (file_exists(SESSION_FILE, F_OK)) {
@@ -1518,22 +1518,37 @@ int32_t create_worker_w_sess(worker_t *w) {
         sess->root = cJSON_CreateObject();
         if (!sess->root) goto bail;
 
-        w_id = cJSON_CreateNumber(w->id);
-        if (!w_id) goto bail;
+        v = cJSON_CreateNumber(w->id);
+        if (!v) goto bail;
+        cJSON_AddItemToObject(sess->root, "id", v);
 
-        poll_id = cJSON_CreateNumber(w->poll_id);
-        if (!poll_id) goto bail;
+        v = cJSON_CreateNumber(w->poll_id);
+        if (!v) goto bail;
+        cJSON_AddItemToObject(sess->root, "poll_id", v);
 
-        cJSON *task = cJSON_CreateObject();
-        cJSON *peer = cJSON_CreateObject();
+        v = cJSON_CreateObject();
+        cJSON_AddItemToObject(sess->root, "task", v);
+
+        v = cJSON_CreateObject();
+        cJSON_AddItemToObject(sess->root, "peer_server", v);
+
+        v = cJSON_CreateString(w->bin_file);
+        cJSON_AddItemToObject(sess->root, "task_file", v);
+
+        v = cJSON_CreateString(w->input_file);
+        cJSON_AddItemToObject(sess->root, "input_file", v);
+
+        v = cJSON_CreateString(w->output_file);
+        cJSON_AddItemToObject(sess->root, "output_file", v);
 
         cJSON_AddItemToObject(sess->root, "update_id", cJSON_CreateNumber(0));
-        cJSON_AddItemToObject(sess->root, "id", w_id);
         cJSON_AddItemToObject(sess->root, "type", cJSON_CreateNumber(0));
-        cJSON_AddItemToObject(sess->root, "poll_id", poll_id);
         cJSON_AddItemToObject(sess->root, "peer_id", cJSON_CreateFalse());
-        cJSON_AddItemToObject(sess->root, "task", task);
-        cJSON_AddItemToObject(sess->root, "peer_server", peer);
+        cJSON_AddItemToObject(sess->root, "task_rcvd", cJSON_CreateFalse());
+        cJSON_AddItemToObject(sess->root, "output_ready", cJSON_CreateFalse());
+        cJSON_AddItemToObject(sess->root, "output_sent", cJSON_CreateFalse());
+        cJSON_AddItemToObject(sess->root, "input_recv", cJSON_CreateFalse());
+        cJSON_AddItemToObject(sess->root, "get_input", cJSON_CreateTrue());
     }
 
     if (0 != write_to_sess_file(sess->root)) {
@@ -1655,6 +1670,110 @@ bail:
     return -1;
 }
 
+char * get_worker_task_file_w_sess() {
+    avd_worker_session_t    *sess = (avd_worker_session_t *)&g_wrkr_session;
+
+    if (!sess->root) {
+        if (file_exists(SESSION_FILE, F_OK)) {
+            if (NULL == (sess->root = parse_json(SESSION_FILE))) {
+                avd_log_error("Failed parsing JSON config");
+                goto bail;
+            }
+        } else {
+            avd_log_error("Failed to locate config file");
+            goto bail;
+        }
+    }
+
+    cJSON *v = cJSON_GetObjectItem(sess->root, "task_file");
+    if ((!v) || (!v->valuestring)) {
+        goto bail;
+    }
+
+    return v->valuestring;
+
+bail:
+    return NULL;
+}
+
+char * get_worker_in_file_w_sess() {
+    avd_worker_session_t    *sess = (avd_worker_session_t *)&g_wrkr_session;
+
+    if (!sess->root) {
+        if (file_exists(SESSION_FILE, F_OK)) {
+            if (NULL == (sess->root = parse_json(SESSION_FILE))) {
+                avd_log_error("Failed parsing JSON config");
+                goto bail;
+            }
+        } else {
+            avd_log_error("Failed to locate config file");
+            goto bail;
+        }
+    }
+
+    cJSON *v = cJSON_GetObjectItem(sess->root, "input_file");
+    if ((!v) || (!v->valuestring)) {
+        goto bail;
+    }
+
+    return v->valuestring;
+
+bail:
+    return NULL;
+}
+
+char * get_worker_out_file_w_sess() {
+    avd_worker_session_t    *sess = (avd_worker_session_t *)&g_wrkr_session;
+
+    if (!sess->root) {
+        if (file_exists(SESSION_FILE, F_OK)) {
+            if (NULL == (sess->root = parse_json(SESSION_FILE))) {
+                avd_log_error("Failed parsing JSON config");
+                goto bail;
+            }
+        } else {
+            avd_log_error("Failed to locate config file");
+            goto bail;
+        }
+    }
+
+    cJSON *v = cJSON_GetObjectItem(sess->root, "output_file");
+    if ((!v) || (!v->valuestring)) {
+        goto bail;
+    }
+
+    return v->valuestring;
+
+bail:
+    return NULL;
+}
+
+cJSON * get_worker_task_w_sess() {
+    avd_worker_session_t    *sess = (avd_worker_session_t *)&g_wrkr_session;
+
+    if (!sess->root) {
+        if (file_exists(SESSION_FILE, F_OK)) {
+            if (NULL == (sess->root = parse_json(SESSION_FILE))) {
+                avd_log_error("Failed parsing JSON config");
+                goto bail;
+            }
+        } else {
+            avd_log_error("Failed to locate config file");
+            goto bail;
+        }
+    }
+
+    cJSON *v = cJSON_GetObjectItem(sess->root, "task");
+    if (!v) {
+        goto bail;
+    }
+
+    return v;
+
+bail:
+    return NULL;
+}
+
 cJSON * get_peer_server_w_sess() {
     avd_worker_session_t    *sess = (avd_worker_session_t *)&g_wrkr_session;
 
@@ -1679,6 +1798,110 @@ cJSON * get_peer_server_w_sess() {
 
 bail:
     return NULL;
+}
+
+bool worker_output_ready_w_sess() {
+    avd_worker_session_t    *sess = (avd_worker_session_t *)&g_wrkr_session;
+
+    if (!sess->root) {
+        if (file_exists(SESSION_FILE, F_OK)) {
+            if (NULL == (sess->root = parse_json(SESSION_FILE))) {
+                avd_log_error("Failed parsing JSON config");
+                goto bail;
+            }
+        } else {
+            avd_log_error("Failed to locate config file");
+            goto bail;
+        }
+    }
+
+    cJSON *obj = cJSON_GetObjectItem(sess->root, "output_ready");
+    if (!obj) {
+        goto bail;
+    }
+
+    return cJSON_IsTrue(obj);
+
+bail:
+    return false;
+}
+
+bool worker_output_sent_w_sess() {
+    avd_worker_session_t    *sess = (avd_worker_session_t *)&g_wrkr_session;
+
+    if (!sess->root) {
+        if (file_exists(SESSION_FILE, F_OK)) {
+            if (NULL == (sess->root = parse_json(SESSION_FILE))) {
+                avd_log_error("Failed parsing JSON config");
+                goto bail;
+            }
+        } else {
+            avd_log_error("Failed to locate config file");
+            goto bail;
+        }
+    }
+
+    cJSON *obj = cJSON_GetObjectItem(sess->root, "output_sent");
+    if (!obj) {
+        goto bail;
+    }
+
+    return cJSON_IsTrue(obj);
+
+bail:
+    return false;
+}
+
+bool worker_input_recv_w_sess() {
+    avd_worker_session_t    *sess = (avd_worker_session_t *)&g_wrkr_session;
+
+    if (!sess->root) {
+        if (file_exists(SESSION_FILE, F_OK)) {
+            if (NULL == (sess->root = parse_json(SESSION_FILE))) {
+                avd_log_error("Failed parsing JSON config");
+                goto bail;
+            }
+        } else {
+            avd_log_error("Failed to locate config file");
+            goto bail;
+        }
+    }
+
+    cJSON *obj = cJSON_GetObjectItem(sess->root, "input_recv");
+    if (!obj) {
+        goto bail;
+    }
+
+    return cJSON_IsTrue(obj);
+
+bail:
+    return false;
+}
+
+bool worker_get_input_w_sess() {
+    avd_worker_session_t    *sess = (avd_worker_session_t *)&g_wrkr_session;
+
+    if (!sess->root) {
+        if (file_exists(SESSION_FILE, F_OK)) {
+            if (NULL == (sess->root = parse_json(SESSION_FILE))) {
+                avd_log_error("Failed parsing JSON config");
+                goto bail;
+            }
+        } else {
+            avd_log_error("Failed to locate config file");
+            goto bail;
+        }
+    }
+
+    cJSON *obj = cJSON_GetObjectItem(sess->root, "get_input");
+    if (!obj) {
+        goto bail;
+    }
+
+    return cJSON_IsTrue(obj);
+
+bail:
+    return false;
 }
 
 #endif

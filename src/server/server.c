@@ -194,10 +194,14 @@ int32_t main (int32_t argc, char const *argv[]) {
 
     u_srvr.type = USER;
     u_srvr.conn.port = cfg.sconf.uport;
+
+    u_srvr.conn.addr = (char *)malloc(INET_ADDRSTRLEN);
     snprintf(u_srvr.conn.addr, INET_ADDRSTRLEN, "%s", cfg.sconf.addr);
 
     w_srvr.type = WORKER;
     w_srvr.conn.port = cfg.sconf.wport;
+
+    w_srvr.conn.addr = (char *)malloc(INET_ADDRSTRLEN);
     snprintf(w_srvr.conn.addr, INET_ADDRSTRLEN, "%s", cfg.sconf.addr);
 
     if (0 != pthread_create(&u_thrd, NULL, server_routine, &u_srvr)) {

@@ -44,7 +44,6 @@ $(STATIC_LIB_TARGETS): $(OBJS)
 $(OTHER_TARGETS): $(OBJS)
 	@echo $(LOG_PREFIX) Linking $@ $(LOG_SUFFIX)
 	@$(CC) -o $@ $^ $(LIBS) $(INCLUDE)
-	@rm -rf *.o $(LIB_DIR)/*.o
 
 -include $(OBJS:.o=.d)
 

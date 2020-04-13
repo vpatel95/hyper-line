@@ -41,14 +41,17 @@ int32_t main (int32_t argc, char *argv[]) {
     snprintf(w.uname, strlen(cfg.wconf.uname)+1, "%s", cfg.wconf.uname);
 
     w.conn.port = cfg.wconf.srvr_port;
+    w.conn.addr = (char *)malloc(strlen(cfg.wconf.srvr_addr)+1);
     snprintf(w.conn.addr, strlen(cfg.wconf.srvr_addr)+1,
              "%s", cfg.wconf.srvr_addr);
 
     ps.conn.port = cfg.wconf.peer_port;
+    ps.conn.addr = (char *)malloc(strlen(cfg.wconf.peer_addr)+1);
     snprintf(ps.conn.addr, strlen(cfg.wconf.peer_addr)+1,
              "%s", cfg.wconf.peer_addr);
 
     w.peer.port = cfg.wconf.peer_port;
+    w.peer.addr = (char *)malloc(strlen(cfg.wconf.peer_addr)+1);
     snprintf(w.peer.addr, strlen(cfg.wconf.peer_addr)+1,
              "%s", cfg.wconf.peer_addr);
 

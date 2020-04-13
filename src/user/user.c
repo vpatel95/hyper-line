@@ -51,12 +51,12 @@ int32_t send_tasks(user_t *user) {
             goto bail;
         }
 
-        if (0 != (send_task_file(task.filename, conn->sockfd, AVD_MSG_F_FILE_TSK))) {
+        if (0 != (send_file(task.filename, conn->sockfd, AVD_MSG_F_FILE_TSK))) {
             avd_log_error("Failed to send task files to the server");
             goto bail;
         }
 
-        if (0 != (send_task_file(task.input_file, conn->sockfd, AVD_MSG_F_FILE_IN))) {
+        if (0 != (send_file(task.input_file, conn->sockfd, AVD_MSG_F_FILE_IN))) {
             avd_log_error("Failed to send task files to the server");
             goto bail;
         }
@@ -102,7 +102,7 @@ void server_communication (user_t *user) {
     }
 
     while(true) {
-        usleep(1000);
+        msleep(500);
     }
 
 #undef sockfd

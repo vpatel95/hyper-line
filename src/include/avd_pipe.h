@@ -32,9 +32,18 @@
 #endif
 
 #define APP_ROOT        "/opt/avd-pipe"
-#define INPUT_FILE      "input"
 #define TASK_FILE       "task.so"
-#define OUTPUT_FILE     "output"
+#define INPUT_FILE      "input.bin"
+#define OUTPUT_FILE     "output.bin"
+
+#define ar_len  strlen(APP_ROOT)
+#define tf_len  strlen(TASK_FILE)
+#define in_len  strlen(INPUT_FILE)
+#define op_len  strlen(OUTPUT_FILE)
+
+#ifndef msleep
+#define msleep(t) (usleep(1000 * (t)))
+#endif
 
 #ifndef abs
 #define abs(x)      ((x) < 0 ? -(x) : (x))
@@ -68,11 +77,6 @@
 }
 #endif
 
-#define err_sys(__err) {    \
-    perror(__err);          \
-    exit(1);                \
-}
-
 #define USER            1
 #define WORKER          2
 #define SERVER          3
@@ -83,7 +87,7 @@
 
 #define MAX_USER        1
 #define MAX_TASK        1
-#define MAX_STAGES      3
+#define MAX_STAGES      5
 #define MAX_WORKER      5
 
 #define MAX_USER_POLL   MAX_USER + 1
@@ -99,7 +103,7 @@
 typedef void (sigfunc)(int);
 
 typedef struct log_info_s {
-    char        log_file[MAX_FILE_NAME_SZ];
+    char        *log_file;
     bool        quiet;
     int32_t     level;
 } __attribute__ ((packed)) log_info_t;
@@ -107,14 +111,14 @@ typedef struct log_info_s {
 typedef struct conn_info_s {
     uint16_t    port;
     int32_t     sockfd;
-    char        addr[INET_ADDRSTRLEN];
+    char        *addr;
 } __attribute__((packed)) conn_info_t;
 
 typedef struct stage_s {
     int32_t     num;
     int32_t     wid;
     bool        assigned;
-    char        func_name[MAX_STAGE_FUNC_NAME_SZ];
+    char        *func_name;
 } __attribute__((packed)) stage_t;
 
 typedef struct task_s {
@@ -122,14 +126,17 @@ typedef struct task_s {
     int32_t     num_stages;
     int32_t     num_unassigned_stages;
     bool        task_sent;
-    char        name[MAX_TASK_NAME_SZ];
-    char        filename[MAX_FILE_NAME_SZ];
-    char        input_file[MAX_FILE_NAME_SZ];
+    char        *name;
+    char        *filename;
+    char        *input_file;
     stage_t     stages[MAX_STAGES];
 } __attribute__((packed)) task_t;
 
 typedef struct peer_server_s {
     int32_t     id;
+    int8_t      type;
+    char        *output_file;
+    char        *input_file;
     conn_info_t peer;
     conn_info_t conn;
 } __attribute__((packed)) peer_server_t;
@@ -137,7 +144,8 @@ typedef struct peer_server_s {
 typedef struct peer_s {
     int8_t          type;
     int32_t         wid;
-    int32_t         file_seq_no;
+    char            *output_file;
+    char            *input_file;
     conn_info_t     ps;
 } __attribute__((packed)) peer_t;
 
@@ -151,11 +159,15 @@ typedef struct worker_s {
     int32_t         tid;
     int8_t          type;
     bool            peer_id;
+    bool            output_ready;
+    bool            output_sent;
     char            *func;
     char            *uname;
     char            *tname;
     char            *dir;
     char            *bin_file;
+    char            *input_file;
+    char            *output_file;
     log_info_t      logger;
     conn_info_t     conn;
     conn_info_t     peer;
@@ -192,9 +204,9 @@ typedef struct server_s {
 typedef struct server_conf_s {
     uint16_t    uport;
     uint16_t    wport;
-    char        addr[INET_ADDRSTRLEN];
-    char        log_ufile[MAX_FILE_NAME_SZ];
-    char        log_wfile[MAX_FILE_NAME_SZ];
+    char        *addr;
+    char        *log_ufile;
+    char        *log_wfile;
     int32_t     log_level;
     int32_t     log_quiet;
 } __attribute__((packed)) server_conf_t;
@@ -203,8 +215,8 @@ typedef struct worker_conf_s {
     char        *uname;
     uint16_t    peer_port;
     uint16_t    srvr_port;
-    char        peer_addr[INET_ADDRSTRLEN];
-    char        srvr_addr[INET_ADDRSTRLEN];
+    char        *peer_addr;
+    char        *srvr_addr;
     log_info_t  logger;
 } __attribute__((packed)) worker_conf_t;
 
@@ -328,7 +340,8 @@ sigfunc * signal (int32_t signo, sigfunc *func) {
     sigfunc *sigfn;
 
     if ((sigfn = signal_helper(signo, func)) == SIG_ERR) {
-        err_sys("signal_error");
+        avd_log_error("signal_error");
+        exit(EXIT_FAILURE);
     }
 
     return sigfn;
@@ -356,7 +369,8 @@ sigfunc * signal_intr (int32_t signo, sigfunc *func) {
     sigfunc *sigfn;
 
     if ((sigfn = signal_intr_helper(signo, func)) == SIG_ERR) {
-        err_sys("signal_error");
+        avd_log_error("signal_error");
+        exit(EXIT_FAILURE);
     }
 
     return sigfn;
@@ -424,6 +438,7 @@ static int32_t parse_srvr_cfg (cJSON *obj, conf_parse_info_t *cfg) {
         avd_log_error("Failed to find 'log_user_file' in server config");
         return -1;
     }
+    cfg->sconf.log_ufile = (char *)malloc(strlen(v->valuestring)+1);
     snprintf(cfg->sconf.log_ufile, strlen(v->valuestring)+1,
              "%s", v->valuestring);
 
@@ -432,6 +447,7 @@ static int32_t parse_srvr_cfg (cJSON *obj, conf_parse_info_t *cfg) {
         avd_log_error("Failed to find 'log_worker_file' in server config");
         return -1;
     }
+    cfg->sconf.log_wfile = (char *)malloc(strlen(v->valuestring)+1);
     snprintf(cfg->sconf.log_wfile, strlen(v->valuestring)+1,
              "%s", v->valuestring);
 
@@ -468,6 +484,7 @@ static int32_t parse_srvr_cfg (cJSON *obj, conf_parse_info_t *cfg) {
         avd_log_error("Failed to find 'addr' in server config");
         return -1;
     }
+    cfg->sconf.addr = (char *)malloc(INET_ADDRSTRLEN);
     snprintf(cfg->sconf.addr, INET_ADDRSTRLEN, "%s", v->valuestring);
 
     return 0;
@@ -496,6 +513,7 @@ static int32_t parse_user_cfg (cJSON *obj, user_t *user) {
         avd_log_error("Failed to find 'log_file' in user config");
         return -1;
     }
+    user->logger.log_file = (char *)malloc(strlen(v->valuestring)+1);
     snprintf(user->logger.log_file, strlen(v->valuestring)+1,
              "%s", v->valuestring);
 
@@ -518,6 +536,7 @@ static int32_t parse_user_cfg (cJSON *obj, user_t *user) {
         avd_log_error("Failed to find 'srvr_addr' in user config");
         return -1;
     }
+    user->conn.addr = (char *)malloc(strlen(v->valuestring)+1);
     snprintf(user->conn.addr, strlen(v->valuestring)+1,
              "%s", v->valuestring);
 
@@ -562,6 +581,7 @@ static int32_t parse_user_cfg (cJSON *obj, user_t *user) {
             avd_log_error("Failed to find 'name' in task %d config", i);
             return -1;
         }
+        task.name = (char *)malloc(strlen(v->valuestring)+1);
         snprintf(task.name, strlen(v->valuestring)+1, "%s", v->valuestring);
 
         v = cJSON_GetObjectItem(tobj, "num_stages");
@@ -576,6 +596,7 @@ static int32_t parse_user_cfg (cJSON *obj, user_t *user) {
             avd_log_error("Failed to find 'file' in task %d config", i);
             return -1;
         }
+        task.filename = (char *)malloc(strlen(v->valuestring)+1);
         snprintf(task.filename, strlen(v->valuestring)+1,
                  "%s", v->valuestring);
 
@@ -584,6 +605,7 @@ static int32_t parse_user_cfg (cJSON *obj, user_t *user) {
             avd_log_error("Failed to find 'input' in task %d config", i);
             return -1;
         }
+        task.input_file = (char *)malloc(strlen(v->valuestring)+1);
         snprintf(task.input_file, strlen(v->valuestring)+1,
                  "%s", v->valuestring);
 
@@ -624,6 +646,7 @@ static int32_t parse_user_cfg (cJSON *obj, user_t *user) {
                 avd_log_error("Failed to find 'file' in task %d config", i);
                 return -1;
             }
+            stage.func_name = (char *)malloc(strlen(v->valuestring)+1);
             snprintf(stage.func_name, strlen(v->valuestring)+1,
                      "%s", v->valuestring);
 
@@ -656,6 +679,7 @@ static int32_t parse_wrkr_cfg (cJSON *obj, conf_parse_info_t *cfg) {
         avd_log_error("Failed to find 'log_file' in worker config");
         return -1;
     }
+    cfg->wconf.logger.log_file = (char *)malloc(strlen(v->valuestring)+1);
     snprintf(cfg->wconf.logger.log_file, strlen(v->valuestring)+1,
              "%s", v->valuestring);
 
@@ -685,6 +709,7 @@ static int32_t parse_wrkr_cfg (cJSON *obj, conf_parse_info_t *cfg) {
         avd_log_error("Failed to find 'addr' in worker config");
         return -1;
     }
+    cfg->wconf.peer_addr = (char *)malloc(INET_ADDRSTRLEN);
     snprintf(cfg->wconf.peer_addr, INET_ADDRSTRLEN, "%s", v->valuestring);
 
     v = cJSON_GetObjectItem(wobj, "srvr_port");
@@ -699,6 +724,7 @@ static int32_t parse_wrkr_cfg (cJSON *obj, conf_parse_info_t *cfg) {
         avd_log_error("Failed to find 'srvr_addr' in worker config");
         return -1;
     }
+    cfg->wconf.srvr_addr = (char *)malloc(INET_ADDRSTRLEN);
     snprintf(cfg->wconf.srvr_addr, INET_ADDRSTRLEN, "%s", v->valuestring);
 
     return 0;

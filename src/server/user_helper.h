@@ -192,17 +192,20 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd,
             cJSON_AddItemToObject(new_task, "id",
                                   cJSON_CreateNumber(task.id));
 
-            snprintf(task.name, MAX_TASK_NAME_SZ, "%s", tmsg.task_name);
+            task.name = (char *)malloc(strlen(tmsg.task_name)+1);
+            snprintf(task.name, strlen(tmsg.task_name)+1, "%s", tmsg.task_name);
             cJSON_AddItemToObject(new_task, "name",
                                   cJSON_CreateString(task.name));
 
-            snprintf(task.filename, MAX_FILE_NAME_SZ,
-                     "%s/%s", u->dir, TASK_FILE);
+            int len = strlen(u->dir) + strlen(TASK_FILE) + 2;
+            task.filename = (char *)malloc(len);
+            snprintf(task.filename, len, "%s/%s", u->dir, TASK_FILE);
             cJSON_AddItemToObject(new_task, "bin_file",
                                   cJSON_CreateString(task.filename));
 
-            snprintf(task.input_file, MAX_FILE_NAME_SZ,
-                     "%s/%s", u->dir, INPUT_FILE );
+            len = strlen(u->dir) + strlen(INPUT_FILE) + 2;
+            task.input_file = (char *)malloc(len);
+            snprintf(task.input_file, len, "%s/%s", u->dir, INPUT_FILE );
             cJSON_AddItemToObject(new_task, "input_file",
                                   cJSON_CreateString(task.input_file));
 
@@ -227,7 +230,8 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd,
                 stage.num = tmsg.stages[j].num;
                 cJSON_AddItemToObject(stg, "num", cJSON_CreateNumber(stage.num));
 
-                snprintf(stage.func_name,strlen(tmsg.stages[j].func)+1, "%s", tmsg.stages[j].func);
+                stage.func_name = (char *)malloc(strlen(tmsg.stages[j].func)+1);
+                snprintf(stage.func_name,strlen(tmsg.stages[j].func)+1,"%s", tmsg.stages[j].func);
                 cJSON_AddItemToObject(stg, "func", cJSON_CreateString(stage.func_name));
 
                 stage.assigned = false;
@@ -268,7 +272,7 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd,
             fp = fopen(file, "ab+");
 
             if (u->file_seq_no == 1) {
-                fseek(fp, 0L, SEEK_SET);
+                fp = fopen(file, "wb+");
             }
 
             fwrite(msg->buf, rc, 1, fp);
@@ -292,7 +296,7 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd,
         }
         case AVD_MSG_F_FILE_IN:
         case AVD_MSG_F_FILE_IN_FIN: {
-            char        file[MAX_FILE_NAME_SZ];
+            char        *file;
             FILE        *fp;
 
             if (u->file_seq_no != msg->hdr.seq_no) {
@@ -308,12 +312,13 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd,
                 }
             }
 
+            file = (char *)malloc(strlen(u->dir)+strlen(INPUT_FILE)+2);
             snprintf(file, MAX_FILE_NAME_SZ, "%s/%s", u->dir, INPUT_FILE);
 
             fp = fopen(file, "ab+");
 
             if (u->file_seq_no == 1) {
-                fseek(fp, 0L, SEEK_SET);
+                fp = fopen(file, "wb+");
             }
 
             fwrite(msg->buf, rc, 1, fp);
@@ -352,7 +357,7 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd,
             fp = fopen(file, "ab+");
 
             if (u->file_seq_no == 1) {
-                fseek(fp, 0L, SEEK_SET);
+                fp = fopen(file, "wb+");
             }
 
             fwrite(msg->buf, rc, 1, fp);
@@ -471,6 +476,8 @@ int32_t connect_user(server_t *srvr) {
                 u->conn.sockfd = user_fd;
                 u->poll_id = i;
                 u->conn.port = sock_ntop_port(&user_addr);
+
+                u->conn.addr = (char *)malloc(INET_ADDRSTRLEN);
                 snprintf(u->conn.addr, INET_ADDRSTRLEN, "%s",
                          sock_ntop_addr(&user_addr));
 

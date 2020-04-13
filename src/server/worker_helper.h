@@ -36,7 +36,7 @@ void close_worker_connection(server_t *srvr, int32_t sockfd, int32_t poll_id, wo
     memset(w, 0, sizeof(worker_t));
 }
 
-int32_t task_poll_response_not_ready(int32_t sockfd) {
+int32_t send_task_wait_to_worker(int32_t sockfd) {
     int32_t     rc;
     message_t   res;
 
@@ -54,7 +54,7 @@ int32_t task_poll_response_not_ready(int32_t sockfd) {
     return 0;
 }
 
-int32_t task_poll_response_ready(worker_t *w, int32_t sockfd, int32_t idx) {
+int32_t send_task_to_worker(worker_t *w, int32_t sockfd, int32_t idx) {
     int32_t     k, rc;
     int32_t     smsg_sz;
     int32_t     data_sz;
@@ -143,6 +143,31 @@ int32_t task_poll_response_ready(worker_t *w, int32_t sockfd, int32_t idx) {
         avd_log_error("Send error: %s\n", strerror(errno));
         goto bail;
     }
+
+    cJSON *v = get_task_field_by_idx_s_sess(w->uname, idx, "bin_file");
+    if ((!v) || (!v->valuestring)) {
+        avd_log_error("Cannot get task file from session");
+        goto bail;
+    }
+
+    if (0 != (rc = send_file(v->valuestring, sockfd, AVD_MSG_F_FILE_TSK))) {
+        avd_log_error("Failed to send task files to the server");
+        goto bail;
+    }
+
+    if (w->stg_num == 1) {
+        v = get_task_field_by_idx_s_sess(w->uname, idx, "input_file");
+        if ((!v) || (!v->valuestring)) {
+            avd_log_error("Cannot get task file from session");
+            goto bail;
+        }
+
+        if (0 != (rc = send_file(v->valuestring, sockfd, AVD_MSG_F_FILE_IN))) {
+            avd_log_error("Failed to send task files to the server");
+            goto bail;
+        }
+    }
+
 bail:
     return rc;
 }
@@ -184,6 +209,8 @@ int32_t process_worker_msg(server_t *srvr, int32_t sockfd, message_t *msg, worke
             snprintf(w->uname, strlen(m.uname)+1, "%s", m.uname);
 
             w->ps.port = m.peer_port;
+
+            w->ps.addr = (char *)malloc(strlen(m.peer_addr)+1);
             snprintf(w->ps.addr, strlen(m.peer_addr)+1, "%s", m.peer_addr);
 
             if (0 > (rc = add_worker_s_sess(srvr, w, m.uname))) {
@@ -290,7 +317,7 @@ int32_t process_worker_msg(server_t *srvr, int32_t sockfd, message_t *msg, worke
                 if (0 < (unassigned_stg = get_task_unassigned_stage_num_s_sess(w->uname, i))) {
                     avd_log_debug("t:%d, w:%d | s:%d", num_tasks, unassigned_wrk, unassigned_stg);
                     if (unassigned_wrk >= unassigned_stg) {
-                        task_poll_response_ready(w, sockfd, i);
+                        send_task_to_worker(w, sockfd, i);
                         break;
                     }
                 }
@@ -298,7 +325,7 @@ int32_t process_worker_msg(server_t *srvr, int32_t sockfd, message_t *msg, worke
             }
 
             if (i == num_tasks) {
-                task_poll_response_not_ready(sockfd);
+                send_task_wait_to_worker(sockfd);
             }
 
             break;
@@ -470,6 +497,8 @@ int32_t connect_worker(server_t *srvr) {
                 w->conn.sockfd = worker_fd;
                 w->poll_id = i;
                 w->conn.port = sock_ntop_port(&worker_addr);
+
+                w->conn.addr = (char *)malloc(INET_ADDRSTRLEN);
                 snprintf(w->conn.addr, INET_ADDRSTRLEN, "%s",
                          sock_ntop_addr(&worker_addr));
 

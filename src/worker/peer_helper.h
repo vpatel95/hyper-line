@@ -76,6 +76,7 @@ int32_t get_peer_server(peer_t *p) {
         avd_log_debug("Cannot find addr in peer server");
         goto bail;
     }
+    p->ps.addr = (char *)malloc(strlen(v->valuestring)+1);
     snprintf(p->ps.addr, strlen(v->valuestring)+1, "%s", v->valuestring);
 
     rc = 0;
@@ -90,20 +91,85 @@ bool peer_server_id() {
 
 bool get_worker_details(peer_t *p) {
     int32_t     rc;
+    char        *str = NULL;
 
     if (0 > (rc = get_worker_id_w_sess())) {
-        avd_log_error("Invalid worker id");
+        avd_log_info("Waiting for worker id");
         goto bail;
     }
     p->wid = rc;
 
     if (0 > (rc = get_worker_type_w_sess())) {
-        avd_log_error("Invalid worker type");
+        avd_log_info("Waiting for worker type");
         goto bail;
     }
     p->type = rc;
 
+    if (NULL == (str = get_worker_out_file_w_sess())) {
+        avd_log_info("Waiting for worker output file");
+        goto bail;
+    }
+    p->output_file = (char *)malloc(strlen(str)+1);
+    snprintf(p->output_file, strlen(str)+1, "%s", str);
+
+    if (NULL == (str = get_worker_in_file_w_sess())) {
+        avd_log_info("Waiting for worker input file");
+        goto bail;
+    }
+    p->input_file = (char *)malloc(strlen(str)+1);
+    snprintf(p->input_file, strlen(str)+1, "%s", str);
+
     return true;
+
+bail:
+    return false;
+}
+
+bool input_ready(peer_t *p) {
+    int32_t         rc, sz;
+    message_t       msg;
+    message_t       rmsg;
+    conn_info_t     *ps = &p->ps;
+
+    memset(&msg, 0, sizeof(msg));
+    memset(&rmsg, 0, sizeof(rmsg));
+
+    if(!worker_get_input_w_sess()) {
+        goto bail;
+    }
+
+    set_msg_type(msg.hdr.type, AVD_MSG_F_IN_POLL);
+    msg.hdr.size = MSG_HDR_SZ;
+    msg.hdr.seq_no = 1;
+
+    if (0 > (rc = send(ps->sockfd, &msg, msg.hdr.size, 0))) {
+        avd_log_error("Task poll error: %s", strerror(errno));
+        goto bail;
+    }
+    avd_log_debug("Input Poll");
+
+    if (0 < recv_avd_hdr(ps->sockfd, &rmsg.hdr)) {
+        if (is_msg_type(rmsg.hdr.type, AVD_MSG_F_IN_POLL_TR)) {
+            if (0 < (sz = (rmsg.hdr.size - MSG_HDR_SZ))) {
+                rc = recv_avd_msg(ps->sockfd, rmsg.buf, sz);
+            }
+
+            if (0 != recv_file(p->input_file, ps->sockfd, AVD_MSG_F_FILE_IN)) {
+                avd_log_error("Error occured while receiving input from peer");
+                return false;
+            }
+            avd_log_warn("Recevied input file. Updated input_recv to true");
+            update_worker_w_sess("input_recv", cJSON_CreateTrue());
+            update_worker_w_sess("get_input", cJSON_CreateFalse());
+
+            return true;
+        }else if (is_msg_type(rmsg.hdr.type, AVD_MSG_F_IN_POLL_FL)) {
+            return false;
+        } else {
+            avd_log_error("Unexpected message type received %d", rmsg.hdr.type);
+            goto bail;
+        }
+    }
 
 bail:
     return false;
@@ -115,16 +181,16 @@ static void * peer_routine (void * arg) {
 
     while (!get_worker_details(p)) {
         avd_log_debug("Waiting for worker id");
-        sleep(3);
+        msleep(1000);
+    }
+
+    if (p->type == BASE_WORKER) {
+        pthread_exit(NULL);
     }
 
     while (!peer_server_id()) {
         avd_log_debug("Waiting for peer server");
         sleep(5);
-    }
-
-    if (p->type == BASE_WORKER) {
-        goto bail;
     }
 
     if (0 > (rc = get_peer_server(p))) {
@@ -138,9 +204,12 @@ static void * peer_routine (void * arg) {
         goto bail;
     }
 
-    while(true) {
-        avd_log_info("Dummy peer communication");
-        sleep(10);
+    while (true) {
+        msleep(500);
+
+        while (!input_ready(p)) {
+            msleep(200);
+        }
     }
 
 bail:

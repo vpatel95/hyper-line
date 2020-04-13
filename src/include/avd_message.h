@@ -45,6 +45,9 @@
 #define AVD_MSG_F_PEER_ID       (1 << 13)
 #define AVD_MSG_F_PEER_ID_TR    (1 << 14)
 #define AVD_MSG_F_PEER_ID_FL    (1 << 15)
+#define AVD_MSG_F_IN_POLL       (1 << 16)
+#define AVD_MSG_F_IN_POLL_TR    (1 << 17)
+#define AVD_MSG_F_IN_POLL_FL    (1 << 18)
 #define AVD_MSG_F_CTRL          (1 << 30)
 #define AVD_MSG_F_CLOSE         (1 << 31)
 
@@ -1703,7 +1706,7 @@ int32_t tmsg_args_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, tm
 }
 
 /* Send Task Files */
-int32_t send_task_file (const char *filename, int32_t sockfd, int32_t flag) {
+int32_t send_file (const char *filename, int32_t sockfd, int32_t flag) {
     int32_t     rc;
     FILE        *fp = fopen(filename, "rb");
     size_t      len = fsize(fp);
@@ -1746,6 +1749,63 @@ int32_t send_task_file (const char *filename, int32_t sockfd, int32_t flag) {
 
 bail:
     return -1;
+}
+
+int32_t recv_file (const char *filename, int32_t sockfd, int32_t flag) {
+    int32_t     rc = 0, sz;
+    int32_t     seq = 1;
+    int32_t     flag_fin = (flag << 1);
+    FILE        *fp = NULL;
+    message_t   msg;
+
+    memset(&msg, 0, sizeof(msg));
+
+    while(true) {
+        if (0 < recv_avd_hdr(sockfd, &msg.hdr)) {
+            if (!is_msg_type(msg.hdr.type, (flag | flag_fin))) {
+                avd_log_error("Unexpected message type %d", msg.hdr.type);
+                return -1;
+            }
+
+            if (seq != msg.hdr.seq_no) {
+                avd_log_error("Out of order message. Expecting seq %d, Received %d",
+                                seq, msg.hdr.seq_no);
+                return -1;
+            }
+
+            if (0 < (sz = msg.hdr.size - MSG_HDR_SZ)) {
+                if(0 > (rc = recv_avd_msg(sockfd, msg.buf, sz))) {
+                    return rc;
+                }
+            }
+
+            fp = fopen(filename, "ab+");
+
+            if (seq == 1) {
+                fp = fopen(filename, "wb+");
+            }
+
+            fwrite(msg.buf, rc, 1, fp);
+
+            if (is_msg_type(msg.hdr.type, flag_fin)) {
+                if (is_msg_type(msg.hdr.type, AVD_MSG_F_FILE_TSK_FIN)) {
+                    if(chmod(filename, S_IRUSR | S_IWUSR | S_IXUSR
+                            | S_IXGRP | S_IRGRP | S_IWGRP | S_IXOTH
+                            | S_IROTH | S_IWOTH) != 0) {
+                        avd_log_error("Error changing to executable mode for file %s", filename);
+                        return -1;
+                    }
+                }
+                fclose(fp);
+                break;
+            }
+            seq++;
+
+            fclose(fp);
+        }
+    }
+
+    return 0;
 }
 
 #endif

@@ -1,9 +1,12 @@
 #include <stdio.h>
 #include <inttypes.h>
+#include <dlfcn.h>
 
 #include "avd_pipe.h"
 #include "avd_message.h"
 #include "avd_session.h"
+
+typedef int32_t (*stage_process)(FILE *in, FILE *op, int32_t offset);
 
 int32_t worker_init () {
 
@@ -26,7 +29,7 @@ error:
     return rc;
 }
 
-int32_t recv_task_stage(worker_t *w, message_t *rmsg) {
+int32_t recv_task_stage(worker_t *w, message_t *rmsg, int32_t sockfd) {
     smsg_ts_t   m;
 
     smsg_ts_t_decode(rmsg->buf, 0, sizeof(rmsg->buf), &m);
@@ -57,15 +60,27 @@ int32_t recv_task_stage(worker_t *w, message_t *rmsg) {
     update_worker_w_sess("assigned", cJSON_CreateTrue());
     update_worker_w_sess("task", task);
 
+    if (0 != recv_file(w->bin_file, sockfd, AVD_MSG_F_FILE_TSK)) {
+        avd_log_error("Error receiving Task File");
+        return -1;
+    }
+
+    if (w->stg_num == 1) {
+        if (0 != recv_file(w->input_file, sockfd, AVD_MSG_F_FILE_IN)) {
+            avd_log_error("Error receiving Task File");
+            return -1;
+        }
+    }
+
+    update_worker_w_sess("task_rcvd", cJSON_CreateTrue());
     return 0;
 
 }
 
 bool task_ready(worker_t *w) {
-    int32_t         rc;
+    int32_t         rc, sz;
     int32_t         wmsg_sz;
     int32_t         data_sz;
-    int32_t         sz;
     message_t       msg;
     message_t       rmsg;
     wmsg_tr_t       wmsg;
@@ -98,7 +113,11 @@ bool task_ready(worker_t *w) {
                 rc = recv_avd_msg(conn->sockfd, rmsg.buf, sz);
             }
 
-            recv_task_stage(w, &rmsg);
+            if (0 != recv_task_stage(w, &rmsg, conn->sockfd)) {
+                avd_log_error("Error occured while receiving task");
+                return false;
+            }
+
             return true;
         }else if (is_msg_type(rmsg.hdr.type, AVD_MSG_F_TASK_POLL_FL)) {
             return false;
@@ -163,6 +182,7 @@ bool peers_identified (worker_t *w) {
             w->ps.port = m.peer_port;
             cJSON_AddItemToObject(p, "port", cJSON_CreateNumber(m.peer_port));
 
+            w->ps.addr = (char *)malloc(strlen(m.peer_addr)+1);
             snprintf(w->ps.addr, strlen(m.peer_addr)+1, "%s", m.peer_addr);
             cJSON_AddItemToObject(p, "addr", cJSON_CreateString(m.peer_addr));
 
@@ -184,43 +204,14 @@ bail:
     return false;
 }
 
-void server_communication (worker_t *w) {
-    message_t       rmsg;
-    conn_info_t     *conn = &w->conn;
-
-    memset(&rmsg, 0, sizeof(rmsg));
-
-#define sockfd conn->sockfd
-    if (sockfd < 0)
-        return;
-
-    while (!task_ready(w)) {
-        sleep(5);
-    }
-
-    if (w->stg_num != 1 && !w->peer_id) {
-        while (!peers_identified(w)) {
-            sleep(5);
-        }
-    } else {
-        w->peer_id = true;
-        update_worker_w_sess("peer_id", cJSON_CreateTrue());
-    }
-
-    while (true) {
-        usleep(1000);
-    }
-#undef sockfd
-}
-
-int32_t reconnect(worker_t *worker) {
+int32_t reconnect(worker_t *w) {
     int32_t         rc = -1;
     int32_t         wmsg_sz;
     int32_t         data_sz;
     int32_t         sz;
     message_t       msg;
     message_t       rmsg;
-    conn_info_t     *conn = &worker->conn;
+    conn_info_t     *conn = &w->conn;
 
     memset(&msg, 0, sizeof(msg));
     memset(&rmsg, 0, sizeof(rmsg));
@@ -229,9 +220,9 @@ int32_t reconnect(worker_t *worker) {
     avd_log_info("Restored user session");
 
     wmsg_rc_t wmsg;
-    wmsg.wid = worker->id;
-    wmsg.uname = (char *)malloc(strlen(worker->uname)+1);
-    snprintf(wmsg.uname, strlen(worker->uname)+1, "%s", worker->uname);
+    wmsg.wid = w->id;
+    wmsg.uname = (char *)malloc(strlen(w->uname)+1);
+    snprintf(wmsg.uname, strlen(w->uname)+1, "%s", w->uname);
 
     wmsg_sz = wmsg_rc_t_encoded_sz(&wmsg);
     data_sz = wmsg_rc_t_encode(msg.buf, 0, wmsg_sz, &wmsg);
@@ -257,11 +248,23 @@ int32_t reconnect(worker_t *worker) {
     smsg_wrc_t m;
     smsg_wrc_t_decode(rmsg.buf, 0, sizeof(rmsg.buf), &m);
 
-    worker->id = m.wid;
-    worker->poll_id = m.poll_id;
+    w->id = m.wid;
+    w->poll_id = m.poll_id;
 
-    update_worker_w_sess("id", cJSON_CreateNumber(worker->id));
-    update_worker_w_sess("poll_id", cJSON_CreateNumber(worker->poll_id));
+    int32_t len = ar_len + tf_len + 2;
+    w->bin_file = (char *)malloc(len);
+    snprintf(w->bin_file, len, "%s/%s", APP_ROOT, TASK_FILE);
+
+    len = ar_len + in_len + 2;
+    w->input_file = (char *)malloc(len);
+    snprintf(w->input_file, len, "%s/%s", APP_ROOT, INPUT_FILE);
+
+    len = ar_len + op_len + 2;
+    w->output_file = (char *)malloc(len);
+    snprintf(w->output_file, len, "%s/%s", APP_ROOT, OUTPUT_FILE);
+
+    update_worker_w_sess("id", cJSON_CreateNumber(w->id));
+    update_worker_w_sess("poll_id", cJSON_CreateNumber(w->poll_id));
 
     return 0;
 
@@ -326,6 +329,18 @@ int32_t new_connection(worker_t *w) {
     w->id = m.wid;
     w->poll_id = m.poll_id;
 
+    int32_t len = ar_len + tf_len + 2;
+    w->bin_file = (char *)malloc(len);
+    snprintf(w->bin_file, len, "%s/%s", APP_ROOT, TASK_FILE);
+
+    len = ar_len + in_len + 2;
+    w->input_file = (char *)malloc(len);
+    snprintf(w->input_file, len, "%s/%s", APP_ROOT, INPUT_FILE);
+
+    len = ar_len + op_len + 2;
+    w->output_file = (char *)malloc(len);
+    snprintf(w->output_file, len, "%s/%s", APP_ROOT, OUTPUT_FILE);
+
     create_worker_w_sess(w);
 
     return 0;
@@ -371,6 +386,145 @@ int32_t connect_server(worker_t *w) {
 bail:
     close_fd(conn->sockfd);
     return rc;
+}
+
+void server_communication (worker_t *w) {
+    bool            process = true;
+    message_t       rmsg;
+    conn_info_t     *conn = &w->conn;
+
+    memset(&rmsg, 0, sizeof(rmsg));
+
+#define sockfd conn->sockfd
+    if (sockfd < 0)
+        return;
+
+    while (!task_ready(w)) {
+        msleep(200);
+    }
+
+    if (w->stg_num != 1 && !w->peer_id) {
+        while (!peers_identified(w)) {
+            sleep(5);
+        }
+    } else {
+        w->peer_id = true;
+        update_worker_w_sess("peer_id", cJSON_CreateTrue());
+    }
+
+    void *stage_injector = dlopen(w->bin_file, (RTLD_LAZY | RTLD_GLOBAL));
+    if (NULL == stage_injector) {
+        avd_log_error("dlopen error: %s", dlerror());
+        exit(EXIT_FAILURE);
+    }
+
+    stage_process stage_executer = (stage_process)dlsym(stage_injector, w->func);
+
+    int32_t     i = 1;
+    int32_t     offset = 0;
+    while(process) {
+
+        switch ( w->type ) {
+            case BASE_WORKER:{
+                update_worker_w_sess("output_sent", cJSON_CreateFalse());
+                update_worker_w_sess("output_ready", cJSON_CreateFalse());
+
+                FILE        *in = fopen(w->input_file, "rb+");
+                FILE        *op = fopen(w->output_file, "wb+");
+
+                if (0 > (offset = stage_executer(in, op, offset))) {
+                    avd_log_error("Error executing during task: %s", dlerror());
+                    exit(EXIT_FAILURE);
+                }
+
+                fclose(in);
+                fclose(op);
+
+                avd_log_warn("Executed stage %d, %d-th time, offset : %d",
+                            w->stg_num, i++, offset);
+
+                update_worker_w_sess("output_ready", cJSON_CreateTrue());
+
+                while (!worker_output_sent_w_sess()) {
+                    msleep(200);
+                }
+
+                if (offset == 0) {
+                    avd_log_warn("Task completed");
+                    process = false;
+                    break;
+                }
+
+                break;
+            }
+            case MID_WORKER:{
+                while (!worker_input_recv_w_sess()) {
+                    msleep(200);
+                }
+
+                update_worker_w_sess("input_recv", cJSON_CreateFalse());
+                update_worker_w_sess("output_sent", cJSON_CreateFalse());
+                update_worker_w_sess("output_ready", cJSON_CreateFalse());
+
+                FILE        *in = fopen(w->input_file, "rb+");
+                FILE        *op = fopen(w->output_file, "wb+");
+
+                if (0 > (offset = stage_executer(in, op, offset))) {
+                    avd_log_error("Error executing during task: %s", dlerror());
+                    exit(EXIT_FAILURE);
+                }
+
+                fclose(in);
+                fclose(op);
+
+                avd_log_warn("Executed stage %d, %d-th time, offset : %d",
+                            w->stg_num, i++, offset);
+
+
+                update_worker_w_sess("output_ready", cJSON_CreateTrue());
+
+                while (!worker_output_sent_w_sess()) {
+                    msleep(200);
+                }
+
+                update_worker_w_sess("get_input", cJSON_CreateTrue());
+
+                break;
+            }
+            case END_WORKER:{
+
+                while (!worker_input_recv_w_sess()) {
+                    msleep(200);
+                }
+
+                FILE        *in = fopen(w->input_file, "rb+");
+                FILE        *op = fopen(w->output_file, "ab+");
+
+                update_worker_w_sess("input_recv", cJSON_CreateFalse());
+
+                if (0 > (offset = stage_executer(in, op, offset))) {
+                    avd_log_error("Error executing during task: %s", dlerror());
+                    exit(EXIT_FAILURE);
+                }
+
+                fclose(in);
+                fclose(op);
+
+                avd_log_warn("Executed stage %d, %d-th time, offset : %d",
+                            w->stg_num, i++, offset);
+
+                update_worker_w_sess("get_input", cJSON_CreateTrue());
+
+                break;
+            }
+            default:
+                avd_log_error("Unexpected worker type : %d", w->type);
+                exit(EXIT_FAILURE);
+                break;
+        }
+
+    }
+#undef sockfd
 }
 
 static void * worker_routine (void *arg) {

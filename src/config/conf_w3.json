@@ -17,19 +17,16 @@
         "srvr_port": 1195,
         "num_tasks": 1,
         "tasks": [{
-            "name": "add_mul_numbers",
-            "file" : "/home/vagrant/Projects/avd-pipe/src/build/avd_sum.so",
-            "input" : "/home/vagrant/Projects/avd-pipe/src/config/avd_sum_input.txt",
-            "num_stages": 3,
+            "name": "ABCD",
+            "num_stages": 2,
+            "file" : "/home/vagrant/avd-pipe/src/build/avd_worker",
+            "input" : "/home/vagrant/avd-pipe/src/include/avd_message.h",
             "stages": [{
                 "num": 1,
-                "func": "add_three"
+                "func": "func_name_1"
             }, {
                 "num": 2,
-                "func": "mul_three"
-            },{
-                "num": 3,
-                "func": "mul_ten"
+                "func": "func_name_2"
             }]
         }]
     },
@@ -37,8 +34,8 @@
         "uname": "vp",
         "log_file": "/var/log/avd_pipe_worker.log",
         "log_level": 0,
-        "log_quiet": true,
-        "addr" : "192.168.33.20",
+        "log_quiet": false,
+        "addr" : "192.168.33.30",
         "peer_port": 1195,
         "srvr_addr": "192.168.33.2",
         "srvr_port": 1196

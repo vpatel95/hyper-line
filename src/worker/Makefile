@@ -1,8 +1,10 @@
 ROOT = ../
 
-LIBS = -lm
 TARGETS = ../build/avd_worker
+LIB_DIR = ../lib
+CUSTOM_LIBS = avd_log.c cJSON.c
+
+LIBS = -pthread -lm -ldl
 INCLUDE = -I ../include
-CUSTOM_LIBS = ../lib/cJSON.c
 
 include $(ROOT)/common.mk

@@ -1,4 +1,11 @@
+#define _GNU_SOURCE
 #include "avd_pipe.h"
+#include "avd_log.h"
+#include "avd_session.h"
+#include "avd_message.h"
+
+#include "user_helper.h"
+#include "worker_helper.h"
 
 #define num_threads         2
 #define init_processing     0
@@ -6,37 +13,34 @@
 #define enter_processing    all_threads_ready + 1
 
 // Global variable definitions
-uint32_t    g_start_processing = init_processing;
-char        *g_conf_file_name = NULL;
+char                            *g_conf_file_name = NULL;
+uint32_t                        g_start_processing = init_processing;
+extern avd_server_session_t     g_srvr_session;
 
 int32_t server_init(conn_info_t *conn, int32_t type) {
-
     int32_t             rc;
     struct sockaddr_in  srvr_addr;
 
-    conn->sockfd = get_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-
-    if (conn->sockfd < 0) {
+    if (0 > (conn->sockfd = get_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP))) {
         rc = -errno;
-        print("[ERROR][CRITICAL] ::: %s Server socket setup failed: %s\n",
-                CLIENT_TYPE(type), strerror(-rc));
-
+        avd_log_error("%s Server socket setup failed: %s",
+                CLIENT_TYPE(type), strerror(errno));
         return rc;
     }
 
-    rc = inet_pton(AF_INET, conn->ip_addr_s, &srvr_addr.sin_addr.s_addr);
+    rc = inet_pton(AF_INET, conn->addr, &srvr_addr.sin_addr.s_addr);
     if (rc == 0) {
-        print("[ERROR][CRITICAL] ::: %s Server IP invalid format: %s\n",
+        rc = -errno;
+        avd_log_error("%s Server IP invalid format: %s",
                 CLIENT_TYPE(type), strerror(errno));
-
-        goto error;
+        goto bail;
     }
 
     if (rc < 0) {
-        print("[ERROR]{CRITICAL] ::: %s Server IP inet_pton error: %s\n",
+        avd_log_error("%s Server IP inet_pton error: %s",
                 CLIENT_TYPE(type), strerror(errno));
 
-        goto error;
+        goto bail;
     }
 
     srvr_addr.sin_family = AF_INET;
@@ -44,351 +48,89 @@ int32_t server_init(conn_info_t *conn, int32_t type) {
 
     rc = bind(conn->sockfd, (struct sockaddr*)&srvr_addr, sizeof(srvr_addr));
     if (rc < 0) {
-        print("[ERROR][CRITICAL] ::: %s Server socket bind error: %s\n",
+        avd_log_error("%s Server socket bind error: %s",
                 CLIENT_TYPE(type), strerror(errno));
 
-        goto error;
+        goto bail;
     }
 
     rc = listen(conn->sockfd, 3);
     if (rc < 0) {
-        print("[ERROR][CRITICAL] ::: %s Server socket listen failed: %s\n",
+        avd_log_error("%s Server socket listen failed: %s",
                 CLIENT_TYPE(type), strerror(errno));
 
-        goto error;
+        goto bail;
     }
 
-    print("%s Server listening on %s:%d\n", CLIENT_TYPE(type),
-            conn->ip_addr_s, conn->port);
+    avd_log_info("%s Server listening on %s:%d", CLIENT_TYPE(type),
+                  conn->addr, conn->port);
 
     return 0;
 
-error:
+bail:
     close(conn->sockfd);
     return rc;
 }
 
-int32_t get_or_create_user_sessions() {
-
-    return 0;
-}
-
-void worker_communications(server_t *srvr, int max_idx, int *nready) {
-
-    int32_t         i;
-    int32_t         n;
-    char            rbuf[MAX_BUF_SZ];
-
-#define worker srvr->poller
-    for (i = 1; i <= max_idx; i++) {
-#define sockfd worker[i].fd
-        if (sockfd < 0) {
-            continue;
-        }
-
-        if (worker[i].revents & (POLLRDNORM | POLLERR)) {
-            if ((n = recv(sockfd, rbuf, MAX_BUF_SZ, 0)) < 0) {
-                if (errno == ECONNRESET) {
-                    print("[ERROR][CRITICAL] ::: Connection reset by worker");
-                    close_fd(sockfd);
-                    return;
-                } else {
-                    print("[ERROR][CRITICAL] ::: Read error occured: %s\n",
-                            strerror(errno));
-                    close_fd(sockfd);
-                    return;
-                }
-            } else if (n == 0) {
-                print("Connection closed by worker\n");
-                srvr->n_users--;
-                close_fd(sockfd);
-                return;
-            } else {
-                print("RECV: %s\n", rbuf);
-                send(sockfd, rbuf, n, 0);
-            }
-
-            *nready -= 1;
-
-            if (*nready <= 0) {
-                break;
-            }
-        }
-#undef sockfd
-    }
-#undef worker
-}
-
-void user_communications(server_t *srvr, int max_idx, int *nready) {
-
-    int32_t         i;
-    int32_t         n;
-    message_t       rmsg;
-    memset(&rmsg, 0, sizeof(rmsg));
-
-#define user srvr->poller
-    for (i = 1; i <= max_idx; i++) {
-#define sockfd user[i].fd
-        if (sockfd < 0) {
-            continue;
-        }
-
-        if (user[i].revents & (POLLRDNORM | POLLERR)) {
-            if ((n = recv(sockfd, &rmsg, sizeof(rmsg), 0)) < 0) {
-                if (errno == ECONNRESET) {
-                    print("[ERROR][CRITICAL] ::: Connection reset by user");
-                    close_fd(sockfd);
-                    return;
-                } else {
-                    print("[ERROR][CRITICAL] ::: Read error occured: %s\n",
-                            strerror(errno));
-                    close_fd(sockfd);
-                    return;
-                }
-            } else if (n == 0) {
-                print("Connection closed by user\n");
-                srvr->n_users--;
-                close_fd(sockfd);
-                return;
-            } else {
-                print("RECV MSG\n\tFlag : %d\n\tSize : %ld\n\tCNT : %s\n",
-                        rmsg.type, rmsg.size, rmsg.content.data);
-                send(sockfd, &rmsg, n, 0);
-            }
-
-            *nready -= 1;
-
-            if (*nready <= 0) {
-                break;
-            }
-        }
-#undef sockfd
-    }
-#undef user
-}
-
-int32_t connect_worker(server_t *srvr, int32_t *max_idx, int32_t *max_worker_idx) {
-
-    int32_t             i, rc = 0;
-    int32_t             nready;
-    int32_t             worker_fd;
-    int32_t             max_poll_sz = MAX_POLL_SZ(srvr->type);
-
-
-    socklen_t           worker_addr_sz;
-    struct sockaddr_in  worker_addr;
-    conn_info_t         *s_conn = &srvr->conn;
-    worker_t            *worker = &srvr->workers[*max_worker_idx];
-
-#define worker_poll srvr->poller
-
-    nready = poll(worker_poll, (uint32_t)(*max_idx + 1), INFTIM);
-
-    if (worker_poll[0].revents & POLLRDNORM) {
-
-        worker_addr_sz = sizeof(worker_addr);
-
-        worker_fd = accept(s_conn->sockfd, (struct sockaddr *)&worker_addr, &worker_addr_sz);
-        if (worker_fd < 0) {
-            rc = -errno;
-            print("[ERROR][CRITICAL] ::: Worker Accept connection failed: %s\n",
-                    strerror(errno));
-
-            goto error;
-        }
-
-        for (i = 1; i < max_poll_sz; i++) {
-            if (worker_poll[i].fd < 0) {
-
-                worker_poll[i].fd = worker_fd;
-                worker_poll[i].events = POLLRDNORM;
-
-                // TODO: We need to create and store worker session
-                // in case of worker disconenection and reconnection
-                // as the task warlier ran by worker might still be running.
-                // Current idea is to store the details of the worker in a
-                // file and retrieve the previous info from the file id
-                // is available in the file. In other words save the state
-                // of the worker periodically and for FAULT TOLERENCE
-
-                //get_or_create_worker_session();
-                worker->conn.sockfd = worker_fd;
-                worker->id = (*max_worker_idx + 1);
-                worker->conn.port = sock_ntop_port((struct sockaddr *)&worker_addr);
-                snprintf(worker->conn.ip_addr_s, INET_ADDRSTRLEN, "%s",
-                         sock_ntop_addr((struct sockaddr *)&worker_addr));
-
-                srvr->n_workers += 1;
-                *max_worker_idx += 1;
-
-                print("New Worker connected: %s, ID: %d, (Total workers: %d)\n",
-                        sock_ntop((struct sockaddr *)&worker_addr),
-                        worker->id, srvr->n_workers);
-
-                break;
-            }
-        }
-
-#undef worker_poll
-
-        if (i == max_poll_sz) {
-            print("[ERROR][CRITICAL] ::: Too many Workers connected\n");
-            goto error;
-        }
-
-
-        if (i > *max_idx)
-            *max_idx = i;
-
-    }
-
-    worker_communications(srvr, *max_idx, &nready);
-
-error:
-    return rc;
-}
-
-
-int32_t connect_user(server_t *srvr, int32_t *max_idx, int32_t *max_user_idx) {
-
-    int32_t             i, rc = 0;
-    int32_t             nready;
-    int32_t             user_fd;
-    int32_t             max_poll_sz = MAX_POLL_SZ(srvr->type);
-
-
-    socklen_t           user_addr_sz;
-    struct sockaddr_in  user_addr;
-    conn_info_t         *s_conn = &srvr->conn;
-    user_t              *user = &srvr->users[*max_user_idx];
-
-#define user_poll srvr->poller
-
-    nready = poll(user_poll, (uint32_t)(*max_idx + 1), INFTIM);
-
-    if (user_poll[0].revents & POLLRDNORM) {
-
-        user_addr_sz = sizeof(user_addr);
-
-        user_fd = accept(s_conn->sockfd, (struct sockaddr *)&user_addr, &user_addr_sz);
-        if (user_fd < 0) {
-            rc = -errno;
-            print("[ERROR][CRITICAL] ::: Accept connection failed: %s\n",
-                    strerror(errno));
-            goto error;
-        }
-
-        for (i = 1; i < max_poll_sz; i++) {
-            if (user_poll[i].fd < 0) {
-
-                user_poll[i].fd = user_fd;
-                user_poll[i].events = POLLRDNORM;
-
-                // TODO: We need to create and store user session
-                // in case of user disconenection and reconnection
-                // as the task warlier ran by user might still be running.
-                // Current idea is to store the details of the user in a
-                // file and retrieve the previous info from the file id
-                // is available in the file. In other words save the state
-                // of the user periodically and for FAULT TOLERENCE
-
-                //get_or_create_user_session();
-                user->conn.sockfd = user_fd;
-                user->id = (*max_user_idx + 1);
-                user->conn.port = sock_ntop_port((struct sockaddr *)&user_addr);
-                snprintf(user->conn.ip_addr_s, INET_ADDRSTRLEN, "%s",
-                         sock_ntop_addr((struct sockaddr *)&user_addr));
-
-                srvr->n_users += 1;
-                *max_user_idx += 1;
-
-                print("New User connected: %s, ID: %d, (Total users: %d)\n",
-                        sock_ntop((struct sockaddr *)&user_addr),
-                        user->id, srvr->n_users);
-
-                break;
-            }
-        }
-
-#undef user_poll
-
-        if (i == max_poll_sz) {
-            print("[ERROR][CRITICAL] ::: Too many Users connected\n");
-
-            goto error;
-        }
-
-
-        if (i > *max_idx)
-            *max_idx = i;
-
-    }
-
-    user_communications(srvr, *max_idx, &nready);
-
-error:
-    return rc;
-}
-
-static void * start_server(void * args) {
-
-    args_t          *arg = (args_t *) args;
-    server_t        *srvr = &arg->srvr;
-    uint16_t        port = arg->port;
+static void * server_routine(void * arg) {
 
     int32_t         i, rc;
-    int32_t         max_idx, max_user_idx, max_worker_idx;
+    server_t        *srvr = (server_t *)(arg);
     conn_info_t     *conn = &srvr->conn;
 
-    snprintf(conn->ip_addr_s, INET_ADDRSTRLEN, "%s", arg->addr);
-    conn->port = port;
-
-    rc = server_init(conn, srvr->type);
-    if (rc < 0) {
-        print("[ERROR][CRITICAL] ::: Server init failed: %s\n",
-                strerror(errno));
-        goto error;
+    if (0 > (rc = server_init(conn, srvr->type))) {
+        avd_log_error("Server init failed: %s", strerror(errno));
+        close(conn->sockfd);
+        exit(EXIT_FAILURE);
     }
 
     srvr->poller[0].fd = conn->sockfd;
     srvr->poller[0].events = POLLRDNORM;
 
     switch(srvr->type) {
-        case USER:
-
+        case USER: {
+            int32_t nready;
             for (i = 1; i < MAX_USER_POLL; i++) {
                 srvr->poller[i].fd = -1;
             }
 
-            max_idx = 0;
-            max_user_idx = 0;
+            srvr->max_poll_sz = MAX_USER_POLL;
+            srvr->curr_poll_sz = 0;
+            srvr->new_client_id = get_max_user_id_s_sess();
 
             __sync_add_and_fetch(&g_start_processing, 1);
+
             /*
              * Ensure the main thread has started other threads
              * and now its time to go for real processing loop.
              * For this wait till main thread signals to enter the 
              * processing loop.
              */
-
             while (enter_processing != *(volatile uint32_t *)&g_start_processing) {
                 usleep(1);
             }
 
             while (true) {
-                rc = connect_user(srvr, &max_idx, &max_user_idx);
+                nready = connect_user(srvr);
+                if (nready < 0) {
+                    avd_log_error("Error occurred 'connect_user': %s", strerror(errno));
+                }
+                user_communications(srvr, nready);
             }
             break;
-        case WORKER:
-
+        }
+        case WORKER: {
+            int32_t nready;
             for (i = 1; i < MAX_WORKER_POLL; i++) {
                 srvr->poller[i].fd = -1;
             }
 
-            max_idx = 0;
-            max_worker_idx = 0;
+            srvr->max_poll_sz = MAX_WORKER_POLL;
+            srvr->curr_poll_sz = 0;
+            srvr->new_client_id = get_max_worker_id_s_sess();
 
             __sync_add_and_fetch(&g_start_processing, 1);
+
             /*
              * Ensure the main thread has started other threads
              * and now its time to go for real processing loop.
@@ -401,27 +143,34 @@ static void * start_server(void * args) {
             }
 
             while (true) {
-                rc = connect_worker(srvr, &max_idx, &max_worker_idx);
+                nready = connect_worker(srvr);
+                if (nready < 0) {
+                    avd_log_error("Error occurred 'connect_worker': %s", strerror(errno));
+                }
+                worker_communications(srvr, nready);
             }
             break;
+        }
     }
 
     return NULL;
+}
 
-error:
-    close(conn->sockfd);
-    return NULL;
+void setup_logger(char *log_file, int32_t level, int32_t quiet) {
+    set_log_file(log_file);
+    set_log_level(level);
+    set_log_quiet(quiet);
 }
 
 int32_t main (int32_t argc, char const *argv[]) {
-    pthread_t   threads[2];
-    conf_parse_info_t cfg;
-    args_t      args[2];
-#define u_args  args[0]
-#define w_args  args[1]
-    server_t    *srvr[2];
-#define u_srvr  srvr[0]
-#define w_srvr  srvr[1]
+    pthread_t               threads[3];
+#define u_thrd              threads[0]
+#define w_thrd              threads[1]
+#define s_thrd              threads[2]
+    server_t                srvr[2];
+#define u_srvr              srvr[0]
+#define w_srvr              srvr[1]
+    conf_parse_info_t       cfg;
 
     if (argc < 2) {
         print("Usage %s <run-time>\n", basename((char *)argv[0]));
@@ -430,39 +179,42 @@ int32_t main (int32_t argc, char const *argv[]) {
 
     signal_intr(SIGINT, sig_int_handler);
 
-    u_srvr = (server_t *) malloc (sizeof(server_t *));
-    w_srvr = (server_t *) malloc (sizeof(server_t *));
-
+    memset(&u_srvr, 0, sizeof(u_srvr));
+    memset(&w_srvr, 0, sizeof(u_srvr));
     memset(&cfg, 0, sizeof(cfg));
 
-    cfg.type = SERVER;
     g_conf_file_name = (char *)argv[1];
 
-    if (0 != process_config_file(g_conf_file_name, &cfg)) {
-        log(L_SRVR, CRITICAL, "Failed to parse config file");
+    if (0 != process_config_file(g_conf_file_name, SERVER, &cfg)) {
+        avd_log_fatal("Failed to parse config file");
         exit(EXIT_FAILURE);
     }
 
-    u_srvr->type = USER;
-    w_srvr->type = WORKER;
+    setup_logger(cfg.sconf.log_ufile, cfg.sconf.log_level, cfg.sconf.log_quiet);
 
-    u_args.srvr = *u_srvr;
-    snprintf(u_args.addr,INET_ADDRSTRLEN, "%s", cfg.sconf.addr);
-    u_args.port = cfg.sconf.uport;
+    u_srvr.type = USER;
+    u_srvr.conn.port = cfg.sconf.uport;
 
-    w_args.srvr = *w_srvr;
-    snprintf(w_args.addr,INET_ADDRSTRLEN, "%s", cfg.sconf.addr);
-    w_args.port = cfg.sconf.wport;
+    u_srvr.conn.addr = (char *)malloc(INET_ADDRSTRLEN);
+    snprintf(u_srvr.conn.addr, INET_ADDRSTRLEN, "%s", cfg.sconf.addr);
 
-    if (0 != pthread_create(&threads[0], NULL, start_server, (void *)&u_args)) {
-        log(L_SRVR, CRITICAL, "User server thread creation failed");
+    w_srvr.type = WORKER;
+    w_srvr.conn.port = cfg.sconf.wport;
+
+    w_srvr.conn.addr = (char *)malloc(INET_ADDRSTRLEN);
+    snprintf(w_srvr.conn.addr, INET_ADDRSTRLEN, "%s", cfg.sconf.addr);
+
+    if (0 != pthread_create(&u_thrd, NULL, server_routine, &u_srvr)) {
+        avd_log_fatal("User server thread creation failed");
         exit(EXIT_FAILURE);
     }
+    pthread_setname_np(u_thrd, "avds_user");
 
-    if (0 != pthread_create(&threads[1], NULL, start_server, (void *)&w_args)) {
-        log(L_SRVR, CRITICAL, "Worker server thread creation failed");
+    if (0 != pthread_create(&w_thrd, NULL, server_routine, &w_srvr)) {
+        avd_log_fatal("Worker server thread creation failed");
         exit(EXIT_FAILURE);
     }
+    pthread_setname_np(w_thrd, "avds_worker");
 
     while (all_threads_ready != *(volatile uint32_t *)&g_start_processing) {
         usleep(10);
@@ -471,8 +223,8 @@ int32_t main (int32_t argc, char const *argv[]) {
     g_start_processing = enter_processing;
     __sync_synchronize();
 
-    pthread_join(threads[0], NULL);
-    pthread_join(threads[1], NULL);
+    pthread_join(u_thrd, NULL);
+    pthread_join(w_thrd, NULL);
 
     exit(EXIT_SUCCESS);
 }

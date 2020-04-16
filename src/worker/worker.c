@@ -1,146 +1,89 @@
+#define _GNU_SOURCE
 #include "avd_pipe.h"
+#include "avd_log.h"
+#include "avd_message.h"
+#include "avd_session.h"
+#include "peer_helper.h"
+#include "worker_helper.h"
+#include "peer_server_helper.h"
 
 char    *g_conf_file_name = NULL;
 
-int32_t worker_init () {
-
-    int32_t             rc;
-    int32_t             srvr_fd;
-
-    srvr_fd = get_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-
-    if (srvr_fd < 0) {
-        rc = -errno;
-        print("[ERROR][CRITICAL] ::: Worker socket setup failed: %s\n",
-                strerror(errno));
-
-        goto error;
-    }
-
-    return srvr_fd;
-
-error:
-    close_fd(srvr_fd);
-    return rc;
-}
-
-/* TODO: Add Multiplexing I/O in server communication
-
-void server_communication (conn_into_t *conn) {
-    int32_t     maxfd;
-    fdset       rset, wset;
-
-    FD_ZERO(&rset);
-    FD_ZERO(&wset);
-
-error:
-    close_fd(conn->sockfd);
-    return;
-}
-*/
-
-int32_t connect_server(worker_t *worker) {
-
-    int32_t             rc = 0;
-    conn_info_t         *conn = &worker->conn;
-    struct sockaddr_in  srvr_addr;
-
-    conn->sockfd = worker_init();
-
-    rc = inet_pton(AF_INET, conn->ip_addr_s, &srvr_addr.sin_addr.s_addr);
-    if (rc == 0) {
-        rc = -errno;
-        print("[ERROR][CRITICAL] ::: Server IP inet_pton error: %s\n",
-                strerror(errno));
-
-        goto error;
-    }
-
-    srvr_addr.sin_family = AF_INET;
-    srvr_addr.sin_port = htons(conn->port);
-
-    rc = connect(conn->sockfd, (struct sockaddr *)&srvr_addr, sizeof(srvr_addr));
-    if (rc < 0) {
-        print("[ERROR][CRITICAL] ::: Error connecting to the server at \"%s:%d\" : %s\n",
-                conn->ip_addr_s, conn->port, strerror(errno));
-
-        goto error;
-    }
-
-    print("Connected to server on %s\n", sock_ntop((struct sockaddr *)&srvr_addr));
-
-    message_t msg;
-    message_t rmsg;
-    memset(&msg, 0, sizeof(msg));
-    memset(&rmsg, 0, sizeof(rmsg));
-
-    set_type(msg.type, AVD_MSG_F_CTRL);
-    sprintf(msg.content.data, "Hello from Worker");
-    msg.size = strlen(msg.content.data);
-
-    rc = send(conn->sockfd, &msg, sizeof(msg), 0);
-    if (rc < 0) {
-        rc = -errno;
-        print("[ERROR][CRITICAL] ::: Send error: %s\n",
-                strerror(errno));
-
-        goto error;
-    }
-
-    rc = recv(conn->sockfd, &rmsg, sizeof(msg), 0);
-    if (rc < 0) {
-        rc = -errno;
-        print("[ERROR][CRITICAL] ::: Recv error: %s\n",
-                strerror(errno));
-
-        goto error;
-    }
-
-    print("RECV MSG\n\tFlag : %d\n\tSize : %ld\n\tCNT : %s\n",
-            rmsg.type, rmsg.size, rmsg.content.data);
-
-error:
-    close_fd(conn->sockfd);
-    return rc;
-}
-
-int32_t start_worker (worker_t *worker) {
-    int32_t         rc;
-
-    rc = connect_server(worker);
-    if (rc < 0) {
-        print("[ERROR][CRITICAL] ::: Cannot establish connection with server: %s\n",
-                strerror(errno));
-
-        goto error;
-    }
-
-error:
-    return rc;
-}
-
-
 int32_t main (int32_t argc, char *argv[]) {
-
-    worker_t        *worker = (worker_t *)malloc(sizeof(worker_t *));
-    conn_info_t     *conn = &worker->conn;
+    pthread_t           threads[3];
+#define w_thrd          threads[0]
+#define ps_thrd         threads[1]
+#define p_thrd          threads[2]
     conf_parse_info_t   cfg;
+    peer_t              p;
+    worker_t            w;
+    peer_server_t       ps;
 
     signal_intr(SIGINT, sig_int_handler);
 
+    memset(&p, 0, sizeof(p));
+    memset(&w, 0, sizeof(w));
+    memset(&ps, 0, sizeof(ps));
     memset(&cfg, 0, sizeof(cfg));
 
-    cfg.type = WORKER;
     g_conf_file_name = (char *)argv[1];
 
-    if (0 != process_config_file(g_conf_file_name, &cfg)) {
+    if (argc < 2)
+        exit(EXIT_FAILURE);
+
+    if (0 != process_config_file(g_conf_file_name, WORKER, &cfg)) {
         print("Failed to parse config file %s\n", argv[1]);
         exit(EXIT_FAILURE);
     }
 
-    snprintf(conn->ip_addr_s, INET_ADDRSTRLEN, "%s", cfg.wconf.addr);
-    conn->port = cfg.wconf.port;
+    w.peer_id = false;
+    w.uname = (char *)malloc(strlen(cfg.wconf.uname)+1);
+    snprintf(w.uname, strlen(cfg.wconf.uname)+1, "%s", cfg.wconf.uname);
 
-    start_worker(worker);
-    return EXIT_SUCCESS;
+    w.conn.port = cfg.wconf.srvr_port;
+    w.conn.addr = (char *)malloc(strlen(cfg.wconf.srvr_addr)+1);
+    snprintf(w.conn.addr, strlen(cfg.wconf.srvr_addr)+1,
+             "%s", cfg.wconf.srvr_addr);
+
+    ps.conn.port = cfg.wconf.peer_port;
+    ps.conn.addr = (char *)malloc(strlen(cfg.wconf.peer_addr)+1);
+    snprintf(ps.conn.addr, strlen(cfg.wconf.peer_addr)+1,
+             "%s", cfg.wconf.peer_addr);
+
+    w.peer.port = cfg.wconf.peer_port;
+    w.peer.addr = (char *)malloc(strlen(cfg.wconf.peer_addr)+1);
+    snprintf(w.peer.addr, strlen(cfg.wconf.peer_addr)+1,
+             "%s", cfg.wconf.peer_addr);
+
+    setup_logger(&cfg.wconf.logger);
+
+    if (0 != pthread_create(&w_thrd, NULL, worker_routine, &w)) {
+        avd_log_fatal("Worker thread creation failed");
+        exit(EXIT_FAILURE);
+    }
+    pthread_setname_np(w_thrd, "avdw_worker");
+
+    if (0 != pthread_create(&ps_thrd, NULL, peer_server_routine, &ps)) {
+        avd_log_fatal("Worker thread creation failed");
+        exit(EXIT_FAILURE);
+    }
+    pthread_setname_np(ps_thrd, "avdw_peer_srv");
+
+    if (0 != pthread_create(&p_thrd, NULL, peer_routine, &p)) {
+        avd_log_fatal("Peer thread creation failed");
+        exit(EXIT_FAILURE);
+    }
+    pthread_setname_np(p_thrd, "avdw_peer");
+
+    pthread_join(w_thrd, NULL);
+    pthread_join(ps_thrd, NULL);
+    pthread_join(p_thrd, NULL);
+
+    int i=1;
+    while (true) {
+        avd_log_info("MAIN THREAD :::: %d", i++);
+        sleep(10);
+    }
+
+    exit(EXIT_SUCCESS);
 }

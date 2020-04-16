@@ -1,5 +1,5 @@
 ROOT = .
-DIRS = server user worker
+DIRS = user server worker apps/sum
 LIBS = pthread m
 INCLUDE = include
 

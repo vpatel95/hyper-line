@@ -487,6 +487,7 @@ void server_communication (worker_t *w) {
                     msleep(200);
                 }
 
+                avd_log_debug("Updated get_input to true");
                 update_worker_w_sess("get_input", cJSON_CreateTrue());
 
                 break;
@@ -513,6 +514,7 @@ void server_communication (worker_t *w) {
                 avd_log_warn("Executed stage %d, %d-th time, offset : %d",
                             w->stg_num, i++, offset);
 
+                avd_log_debug("Updated get_input to true");
                 update_worker_w_sess("get_input", cJSON_CreateTrue());
 
                 break;

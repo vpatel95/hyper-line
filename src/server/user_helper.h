@@ -209,6 +209,12 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd,
             cJSON_AddItemToObject(new_task, "input_file",
                                   cJSON_CreateString(task.input_file));
 
+            len = strlen(u->dir) + strlen(OUTPUT_FILE) + 2;
+            task.output_file = (char *)malloc(len);
+            snprintf(task.output_file, len, "%s/%s", u->dir, OUTPUT_FILE );
+            cJSON_AddItemToObject(new_task, "output_file",
+                                  cJSON_CreateString(task.output_file));
+
             task.num_stages = tmsg.num_stages;
             cJSON_AddItemToObject(new_task, "num_stages",
                                   cJSON_CreateNumber(task.num_stages));
@@ -252,7 +258,7 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd,
         case AVD_MSG_F_FILE_TSK:
         case AVD_MSG_F_FILE_TSK_FIN: {
             char        file[MAX_FILE_NAME_SZ];
-            FILE        *fp;
+            FILE        *fp = NULL;
 
             if (u->file_seq_no != msg->hdr.seq_no) {
                 avd_log_error("Out of order message. Expecting seq %d, Received %d",
@@ -269,10 +275,10 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd,
 
             snprintf(file, MAX_FILE_NAME_SZ, "%s/%s", u->dir, TASK_FILE);
 
-            fp = fopen(file, "ab+");
-
             if (u->file_seq_no == 1) {
                 fp = fopen(file, "wb+");
+            } else {
+                fp = fopen(file, "ab+");
             }
 
             fwrite(msg->buf, rc, 1, fp);
@@ -291,13 +297,12 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd,
             }
 
             fclose(fp);
-
             break;
         }
         case AVD_MSG_F_FILE_IN:
         case AVD_MSG_F_FILE_IN_FIN: {
             char        *file;
-            FILE        *fp;
+            FILE        *fp = NULL;
 
             if (u->file_seq_no != msg->hdr.seq_no) {
                 avd_log_error("Out of order message. Expecting seq %d, Received %d",
@@ -315,10 +320,10 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd,
             file = (char *)malloc(strlen(u->dir)+strlen(INPUT_FILE)+2);
             snprintf(file, MAX_FILE_NAME_SZ, "%s/%s", u->dir, INPUT_FILE);
 
-            fp = fopen(file, "ab+");
-
             if (u->file_seq_no == 1) {
                 fp = fopen(file, "wb+");
+            } else {
+                fp = fopen(file, "ab+");
             }
 
             fwrite(msg->buf, rc, 1, fp);
@@ -336,7 +341,7 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd,
         }
         case AVD_MSG_F_FILE_OUT:
         case AVD_MSG_F_FILE_OUT_FIN: {
-            FILE        *fp;
+            FILE        *fp = NULL;
             char        file[MAX_FILE_NAME_SZ];
 
             if (u->file_seq_no != msg->hdr.seq_no) {
@@ -354,10 +359,10 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd,
 
             snprintf(file, MAX_FILE_NAME_SZ, "%s/%s", u->dir, OUTPUT_FILE);
 
-            fp = fopen(file, "ab+");
-
             if (u->file_seq_no == 1) {
                 fp = fopen(file, "wb+");
+            } else {
+                fp = fopen(file, "ab+");
             }
 
             fwrite(msg->buf, rc, 1, fp);

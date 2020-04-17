@@ -1549,6 +1549,7 @@ int32_t create_worker_w_sess(worker_t *w) {
         cJSON_AddItemToObject(sess->root, "output_sent", cJSON_CreateFalse());
         cJSON_AddItemToObject(sess->root, "input_recv", cJSON_CreateFalse());
         cJSON_AddItemToObject(sess->root, "get_input", cJSON_CreateTrue());
+        cJSON_AddItemToObject(sess->root, "task_fin", cJSON_CreateFalse());
     }
 
     if (0 != write_to_sess_file(sess->root)) {
@@ -1904,4 +1905,29 @@ bail:
     return false;
 }
 
+bool worker_task_fin_w_sess() {
+    avd_worker_session_t    *sess = (avd_worker_session_t *)&g_wrkr_session;
+
+    if (!sess->root) {
+        if (file_exists(SESSION_FILE, F_OK)) {
+            if (NULL == (sess->root = parse_json(SESSION_FILE))) {
+                avd_log_error("Failed parsing JSON config");
+                goto bail;
+            }
+        } else {
+            avd_log_error("Failed to locate config file");
+            goto bail;
+        }
+    }
+
+    cJSON *obj = cJSON_GetObjectItem(sess->root, "task_fin");
+    if (!obj) {
+        goto bail;
+    }
+
+    return cJSON_IsTrue(obj);
+
+bail:
+    return false;
+}
 #endif

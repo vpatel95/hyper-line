@@ -101,7 +101,25 @@ int32_t process_ps_msg(int32_t sockfd, message_t *msg, peer_server_t *ps) {
     switch(msg->hdr.type) {
         case AVD_MSG_F_IN_POLL:{
             int32_t rc;
-            avd_log_warn("Recevied input poll");
+            avd_log_info("Recevied input poll");
+            if (worker_task_fin_w_sess()) {
+                message_t   res;
+
+                memset(&res, 0, sizeof(res));
+
+                set_msg_type(res.hdr.type, AVD_MSG_F_TASK_FIN);
+                res.hdr.size = MSG_HDR_SZ;
+                res.hdr.seq_no = 1;
+
+                if (0 > (rc = send(sockfd, &res, res.hdr.size, 0))) {
+                    avd_log_error("Send error: %s\n", strerror(errno));
+                    return -1;
+                }
+
+                return 0;
+
+            }
+
             if (worker_output_ready_w_sess() && (!worker_output_sent_w_sess())) {
                 if (0 != (rc = send_input_to_peer(sockfd, ps->output_file))) {
                     avd_log_debug("Cannot send file : %s:%s", ps->output_file, strerror(errno));

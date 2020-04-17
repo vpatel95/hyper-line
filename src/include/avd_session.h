@@ -774,6 +774,64 @@ bail:
     return rc;
 }
 
+int32_t update_task_field_by_id_s_sess (char *uname, int32_t tid, char *field, cJSON *val) {
+    int32_t                 i, j;
+    cJSON                   *v = NULL;
+    avd_server_session_t    *sess = (avd_server_session_t *)&g_srvr_session;
+
+    if (uname == NULL || field == NULL || val == NULL) {
+        avd_log_error("Invalid params received");
+        goto bail;
+    }
+
+    if (!sess->root) {
+        if (0 != build_server_sess()) {
+            avd_log_error("Failed to build server session");
+            goto bail;
+        }
+    }
+
+    for (i = 0; i < sess->num_users; i++) {
+        avd_user_session_t  *usess = &sess->usess[i];
+
+        v = cJSON_GetObjectItem(usess->root, "uname");
+        if ((!v) || (!v->valuestring)) {
+            avd_log_debug("cannot extract 'uname' from user object");
+            goto bail;
+        }
+
+        if (0 == strcmp(v->valuestring, uname)) {
+            for (j = 0; j < usess->num_tasks; j++) {
+#define task usess->tsess[j]
+
+                v = cJSON_GetObjectItem(task.root, "id");
+                if ((!v) || (!v->valueint)) {
+                    avd_log_error("Malformed task in session file");
+                    goto bail;
+                }
+
+                if (tid == v->valueint) {
+                    cJSON_ReplaceItemInObject(task.root, field, val);
+
+                    increment_update_id(sess->root);
+
+                    if (0 != write_to_sess_file(sess->root)) {
+                        goto bail;
+                    }
+
+                    build_server_sess();
+
+                    return 0;
+                }
+#undef task
+            }
+        }
+    }
+
+bail:
+    return -1;
+}
+
 cJSON * get_stage_field_by_id_s_sess (char *uname, int32_t tid, int32_t snum, char *field) {
     int32_t                 i, j, k;
     cJSON                   *v = NULL;

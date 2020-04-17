@@ -134,7 +134,7 @@ bool input_ready(peer_t *p) {
     memset(&msg, 0, sizeof(msg));
     memset(&rmsg, 0, sizeof(rmsg));
 
-    if(!worker_get_input_w_sess()) {
+    if(!worker_get_input_w_sess() && !worker_task_fin_w_sess()) {
         goto bail;
     }
 
@@ -149,6 +149,16 @@ bool input_ready(peer_t *p) {
     avd_log_debug("Input Poll");
 
     if (0 < recv_avd_hdr(ps->sockfd, &rmsg.hdr)) {
+        if (is_msg_type(rmsg.hdr.type, AVD_MSG_F_TASK_FIN)) {
+            if (0 < (sz = (rmsg.hdr.size - MSG_HDR_SZ))) {
+                rc = recv_avd_msg(ps->sockfd, rmsg.buf, sz);
+            }
+
+            update_worker_w_sess("task_fin", cJSON_CreateTrue());
+            update_worker_w_sess("input_recv", cJSON_CreateTrue());
+            return true;
+        }
+
         if (is_msg_type(rmsg.hdr.type, AVD_MSG_F_IN_POLL_TR)) {
             if (0 < (sz = (rmsg.hdr.size - MSG_HDR_SZ))) {
                 rc = recv_avd_msg(ps->sockfd, rmsg.buf, sz);

@@ -189,6 +189,8 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd,
             update_user_s_sess(u->uname, "num_tasks",
                                cJSON_CreateNumber(u->num_tasks));
 
+            cJSON_AddItemToObject(new_task, "task_fin", cJSON_CreateFalse());
+
             cJSON_AddItemToObject(new_task, "id",
                                   cJSON_CreateNumber(task.id));
 

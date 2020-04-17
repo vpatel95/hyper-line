@@ -440,7 +440,7 @@ void server_communication (worker_t *w) {
                 fclose(in);
                 fclose(op);
 
-                avd_log_warn("Executed stage %d, %d-th time, offset : %d",
+                avd_log_info("Executed stage %d, %d-th time, offset : %d",
                             w->stg_num, i++, offset);
 
                 update_worker_w_sess("output_ready", cJSON_CreateTrue());
@@ -450,7 +450,8 @@ void server_communication (worker_t *w) {
                 }
 
                 if (offset == 0) {
-                    avd_log_warn("Task completed");
+                    avd_log_info("Task completed");
+                    update_worker_w_sess("task_fin", cJSON_CreateTrue());
                     process = false;
                     break;
                 }
@@ -460,6 +461,12 @@ void server_communication (worker_t *w) {
             case MID_WORKER:{
                 while (!worker_input_recv_w_sess()) {
                     msleep(200);
+                }
+
+                if (worker_task_fin_w_sess()) {
+                    avd_log_info("Task completed");
+                    process = false;
+                    break;
                 }
 
                 update_worker_w_sess("input_recv", cJSON_CreateFalse());
@@ -477,7 +484,7 @@ void server_communication (worker_t *w) {
                 fclose(in);
                 fclose(op);
 
-                avd_log_warn("Executed stage %d, %d-th time, offset : %d",
+                avd_log_info("Executed stage %d, %d-th time, offset : %d",
                             w->stg_num, i++, offset);
 
 
@@ -493,9 +500,45 @@ void server_communication (worker_t *w) {
                 break;
             }
             case END_WORKER:{
+                int32_t     rc;
 
                 while (!worker_input_recv_w_sess()) {
                     msleep(200);
+                }
+
+                if (worker_task_fin_w_sess()) {
+                    avd_log_info("Task completed");
+
+                    int32_t     wmsg_sz;
+                    int32_t     data_sz;
+                    wmsg_tf_t   wmsg;
+                    message_t   res;
+
+                    memset(&res, 0, sizeof(res));
+
+                    wmsg.wid = w->id;
+                    wmsg.tid = w->tid;
+                    wmsg.uname = (char *)malloc(strlen(w->uname)+1);
+                    snprintf(wmsg.uname, strlen(w->uname)+1, "%s", w->uname);
+
+                    wmsg_sz = wmsg_tf_t_encoded_sz(&wmsg);
+                    data_sz = wmsg_tf_t_encode(res.buf, 0, wmsg_sz, &wmsg);
+
+                    set_msg_type(res.hdr.type, AVD_MSG_F_TASK_FIN);
+                    res.hdr.size = MSG_HDR_SZ + data_sz;
+                    res.hdr.seq_no = 1;
+
+                    if (0 > (rc = send(sockfd, &res, res.hdr.size, 0))) {
+                        avd_log_error("Send error: %s\n", strerror(errno));
+                    }
+
+                    if (0 != send_file(w->output_file, sockfd, AVD_MSG_F_FILE_OUT)) {
+                        avd_log_error("Cannot send consolidated output to server");
+                        return;
+                    }
+
+                    process = false;
+                    break;
                 }
 
                 FILE        *in = fopen(w->input_file, "rb+");
@@ -511,7 +554,7 @@ void server_communication (worker_t *w) {
                 fclose(in);
                 fclose(op);
 
-                avd_log_warn("Executed stage %d, %d-th time, offset : %d",
+                avd_log_info("Executed stage %d, %d-th time, offset : %d",
                             w->stg_num, i++, offset);
 
                 avd_log_debug("Updated get_input to true");

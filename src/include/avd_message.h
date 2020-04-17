@@ -48,6 +48,7 @@
 #define AVD_MSG_F_IN_POLL       (1 << 16)
 #define AVD_MSG_F_IN_POLL_TR    (1 << 17)
 #define AVD_MSG_F_IN_POLL_FL    (1 << 18)
+#define AVD_MSG_F_TASK_FIN      (1 << 19)
 #define AVD_MSG_F_CTRL          (1 << 30)
 #define AVD_MSG_F_CLOSE         (1 << 31)
 
@@ -115,6 +116,13 @@ typedef struct wmsg_pi_s {
     char        *uname;
 } wmsg_pi_t;
 
+// Worker Message : Task Fin (tf)
+typedef struct wmsg_tf_s {
+    int32_t     wid;
+    int32_t     tid;
+    char        *uname;
+} wmsg_tf_t;
+
 // Server Message : User Re-Connect (nuc)
 typedef struct smsg_urc_s {
     int32_t     uid;
@@ -127,6 +135,7 @@ typedef struct smsg_wrc_s {
     int32_t     poll_id;
 } smsg_wrc_t;
 
+// Server Message : Task Stage (ts)
 typedef struct smsg_ts_s {
     int32_t     tid;
     int32_t     stg_num;
@@ -1100,6 +1109,48 @@ int32_t __wmsg_pi_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, wm
     return pos;
 }
 
+uint32_t __wmsg_tf_t_encoded_sz(const wmsg_tf_t *msg) {
+    uint32_t    sz = 0;
+
+    sz += __int32_t_encoded_array_sz(&(msg->wid), 1);
+    sz += __int32_t_encoded_array_sz(&(msg->tid), 1);
+    sz += __string_encoded_array_sz(&(msg->uname), 1);
+
+    return sz;
+}
+
+int32_t __wmsg_tf_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const wmsg_tf_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->wid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __int32_t_encode_array(buf, offset + pos, maxlen - pos, &(msg->tid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __string_encode_array(buf, offset + pos, maxlen - pos, &(msg->uname), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t __wmsg_tf_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, wmsg_tf_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->wid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __int32_t_decode_array(buf, offset + pos, maxlen - pos, &(msg->tid), 1);
+    if (len < 0) return len; else pos += len;
+
+    len = __string_decode_array(buf, offset + pos, maxlen - pos, &(msg->uname), 1);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
 uint32_t __smsg_urc_t_encoded_sz(const smsg_urc_t *msg) {
     uint32_t    sz = 0;
 
@@ -1530,6 +1581,31 @@ int32_t wmsg_pi_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, wmsg
     return pos;
 }
 
+/* Worker Task FIN */
+uint32_t wmsg_tf_t_encoded_sz (const wmsg_tf_t *msg) {
+    return 8 + __wmsg_tf_t_encoded_sz(msg);
+}
+
+int32_t wmsg_tf_t_encode(void *buf, uint32_t offset, uint32_t maxlen, const wmsg_tf_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __wmsg_tf_t_encode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
+int32_t wmsg_tf_t_decode(const void *buf, uint32_t offset, uint32_t maxlen, wmsg_tf_t *msg) {
+    uint32_t    pos = 0;
+    int32_t     len;
+
+    len = __wmsg_tf_t_decode(buf, offset + pos, maxlen - pos, msg);
+    if (len < 0) return len; else pos += len;
+
+    return pos;
+}
+
 /* Server User Reconnect Reply */
 uint32_t smsg_urc_t_encoded_sz (const smsg_urc_t *msg) {
     return 8 + __smsg_urc_t_encoded_sz(msg);
@@ -1745,6 +1821,7 @@ int32_t send_file (const char *filename, int32_t sockfd, int32_t flag) {
 
     }
 
+    fclose(fp);
     return 0;
 
 bail:
@@ -1779,10 +1856,10 @@ int32_t recv_file (const char *filename, int32_t sockfd, int32_t flag) {
                 }
             }
 
-            fp = fopen(filename, "ab+");
-
             if (seq == 1) {
                 fp = fopen(filename, "wb+");
+            } else {
+                fp = fopen(filename, "ab+");
             }
 
             fwrite(msg.buf, rc, 1, fp);

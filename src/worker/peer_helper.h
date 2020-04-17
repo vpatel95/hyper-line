@@ -158,9 +158,10 @@ bool input_ready(peer_t *p) {
                 avd_log_error("Error occured while receiving input from peer");
                 return false;
             }
-            avd_log_warn("Recevied input file. Updated input_recv to true");
-            update_worker_w_sess("input_recv", cJSON_CreateTrue());
+            avd_log_debug("Updated get_input to false");
             update_worker_w_sess("get_input", cJSON_CreateFalse());
+            avd_log_debug("Recevied input file. Updated input_recv to true");
+            update_worker_w_sess("input_recv", cJSON_CreateTrue());
 
             return true;
         }else if (is_msg_type(rmsg.hdr.type, AVD_MSG_F_IN_POLL_FL)) {

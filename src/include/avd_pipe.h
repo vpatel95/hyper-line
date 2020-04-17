@@ -13,12 +13,14 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
+#include <sys/file.h>
+
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <net/if.h>
 #include <fcntl.h>
 #include <signal.h>
-#include <sys/wait.h>
 #include <poll.h>
 #include <limits.h>
 
@@ -77,6 +79,10 @@
 }
 #endif
 
+#ifndef ffd
+#define ffd(__fp)   fileno(__fp)
+#endif
+
 #define USER            1
 #define WORKER          2
 #define SERVER          3
@@ -129,6 +135,7 @@ typedef struct task_s {
     char        *name;
     char        *filename;
     char        *input_file;
+    char        *output_file;
     stage_t     stages[MAX_STAGES];
 } __attribute__((packed)) task_t;
 

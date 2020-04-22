@@ -79,11 +79,5 @@ int32_t main (int32_t argc, char *argv[]) {
     pthread_join(ps_thrd, NULL);
     pthread_join(p_thrd, NULL);
 
-    int i=1;
-    while (true) {
-        avd_log_info("MAIN THREAD :::: %d", i++);
-        sleep(10);
-    }
-
     exit(EXIT_SUCCESS);
 }

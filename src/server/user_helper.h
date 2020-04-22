@@ -189,6 +189,9 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd,
             update_user_s_sess(u->uname, "num_tasks",
                                cJSON_CreateNumber(u->num_tasks));
 
+            cJSON_AddItemToObject(new_task, "task_fin", cJSON_CreateFalse());
+            cJSON_AddItemToObject(new_task, "output_recv", cJSON_CreateFalse());
+
             cJSON_AddItemToObject(new_task, "id",
                                   cJSON_CreateNumber(task.id));
 
@@ -253,6 +256,55 @@ int32_t process_user_msg(server_t *srvr, int32_t sockfd,
 
             add_task_s_sess(u->uname, new_task);
 #undef task
+            break;
+        }
+        case AVD_MSG_F_TASK_STATUS: {
+            if (0 < (sz = msg->hdr.size - MSG_HDR_SZ)) {
+                if (0 > (rc = recv_avd_msg(sockfd, msg->buf, sz))) {
+                    return rc;
+                }
+            }
+
+            umsg_ts_t m;
+            umsg_ts_t_decode(msg->buf, 0, sizeof(msg->buf), &m);
+
+            avd_log_debug("Received Task Status Message ::: Name : %s, Task : %s",
+                          m.uname, m.tname);
+
+            cJSON *v = get_task_field_by_name_s_sess(m.uname, m.tname, "output_recv");
+
+            smsg_tsr_t  smsg;
+
+            smsg.name = (char *)malloc(strlen(m.tname)+1);
+            snprintf(smsg.name, strlen(m.tname)+1, "%s", m.tname);
+
+            if (cJSON_IsTrue(v)) {
+                smsg.fin = 1;
+            } else {
+                smsg.fin = 0;
+            }
+
+            smsg_sz = smsg_tsr_t_encoded_sz(&smsg);
+            data_sz = smsg_tsr_t_encode(res.buf, 0, smsg_sz, &smsg);
+
+            set_msg_type(res.hdr.type, AVD_MSG_F_TASK_STATUS_R);
+            res.hdr.size = MSG_HDR_SZ + data_sz;
+
+
+            if (0 > (rc = send(sockfd, &res, res.hdr.size, 0))) {
+                rc = -errno;
+                avd_log_error("Send error: %s\n", strerror(errno));
+                return rc;;
+            }
+
+            if (cJSON_IsTrue(v)) {
+                cJSON *of = get_task_field_by_name_s_sess(m.uname, m.tname, "output_file");
+                if (0 != (send_file(of->valuestring, sockfd, AVD_MSG_F_FILE_OUT))) {
+                    avd_log_error("Failed to send task output files to the user");
+                    return -1;
+                }
+            }
+
             break;
         }
         case AVD_MSG_F_FILE_TSK:

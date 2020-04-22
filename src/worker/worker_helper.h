@@ -453,6 +453,7 @@ void server_communication (worker_t *w) {
                     avd_log_info("Task completed");
                     update_worker_w_sess("task_fin", cJSON_CreateTrue());
                     process = false;
+                    return;
                     break;
                 }
 
@@ -466,6 +467,7 @@ void server_communication (worker_t *w) {
                 if (worker_task_fin_w_sess()) {
                     avd_log_info("Task completed");
                     process = false;
+                    return;
                     break;
                 }
 
@@ -537,8 +539,13 @@ void server_communication (worker_t *w) {
                         return;
                     }
 
+                    update_worker_w_sess("output_sent", cJSON_CreateTrue());
+                    update_worker_w_sess("shutdown", cJSON_CreateTrue());
+
                     process = false;
+                    return;
                     break;
+
                 }
 
                 FILE        *in = fopen(w->input_file, "rb+");
@@ -584,8 +591,28 @@ static void * worker_routine (void *arg) {
 
     server_communication(w);
 
+    while (!worker_shutdown_w_sess()) {
+        msleep(500);
+    }
+
+    message_t msg;
+    memset(&msg, 0, sizeof(msg));
+
+    set_msg_type(msg.hdr.type, AVD_MSG_F_CLOSE);
+    msg.hdr.size = MSG_HDR_SZ;
+
+    if (0 > (rc = send(w->conn.sockfd, &msg, msg.hdr.size, 0))) {
+        rc = -errno;
+        avd_log_error("Task Connection Close error: %s\n", strerror(errno));
+    }
+
+    avd_log_info("send worker connection close message");
+
+    close(w->conn.sockfd);
+
 bail:
-    return NULL;
+    avd_log_info("pthread_exit");
+    pthread_exit(NULL);
 }
 
 void setup_logger(log_info_t *logger) {

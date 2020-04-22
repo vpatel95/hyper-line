@@ -134,6 +134,20 @@ bool input_ready(peer_t *p) {
     memset(&msg, 0, sizeof(msg));
     memset(&rmsg, 0, sizeof(rmsg));
 
+    if (worker_shutdown_w_sess()) {
+        set_msg_type(msg.hdr.type, AVD_MSG_F_CLOSE);
+        msg.hdr.size = MSG_HDR_SZ;
+        msg.hdr.seq_no = 1;
+
+        if (0 > (rc = send(ps->sockfd, &msg, msg.hdr.size, 0))) {
+            avd_log_error("Task poll error: %s", strerror(errno));
+            goto bail;
+        }
+
+        close(ps->sockfd);
+        pthread_exit(NULL);
+    }
+
     if(!worker_get_input_w_sess() && !worker_task_fin_w_sess()) {
         goto bail;
     }
@@ -224,5 +238,5 @@ static void * peer_routine (void * arg) {
     }
 
 bail:
-    return NULL;
+    pthread_exit(NULL);;
 }

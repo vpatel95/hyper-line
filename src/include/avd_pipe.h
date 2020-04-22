@@ -616,6 +616,15 @@ static int32_t parse_user_cfg (cJSON *obj, user_t *user) {
         snprintf(task.input_file, strlen(v->valuestring)+1,
                  "%s", v->valuestring);
 
+        v = cJSON_GetObjectItem(tobj, "output");
+        if ((!v) || (!v->valuestring)) {
+            avd_log_error("Failed to find 'output' in task %d config", i);
+            return -1;
+        }
+        task.output_file = (char *)malloc(strlen(v->valuestring)+1);
+        snprintf(task.output_file, strlen(v->valuestring)+1,
+                 "%s", v->valuestring);
+
         sobj_arr = cJSON_GetObjectItem(tobj, "stages");
         if (!sobj_arr) {
             avd_log_error("Failed to find 'stages' in task %d config", i);

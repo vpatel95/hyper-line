@@ -20,6 +20,7 @@
             "name": "add_mul_numbers",
             "file" : "/home/vagrant/Projects/avd-pipe/src/build/avd_sum.so",
             "input" : "/home/vagrant/Projects/avd-pipe/src/config/avd_sum_input.txt",
+            "output" : "/home/vagrant/Projects/avd-pipe/src/config/avd_sum_output.txt",
             "num_stages": 3,
             "stages": [{
                 "num": 1,

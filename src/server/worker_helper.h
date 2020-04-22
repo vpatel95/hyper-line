@@ -8,7 +8,7 @@
 worker_t * get_worker_from_sockfd(server_t *srvr, int32_t sockfd) {
     int32_t     idx;
     worker_t    *w;
-    for (idx = 0; idx < srvr->n_clients; idx++) {
+    for (idx = 0; idx < MAX_WORKER; idx++) {
         w= &srvr->workers[idx];
         if (w->conn.sockfd == sockfd) {
             return w;
@@ -20,14 +20,14 @@ worker_t * get_worker_from_sockfd(server_t *srvr, int32_t sockfd) {
 
 void close_worker_connection(server_t *srvr, int32_t sockfd, int32_t poll_id, worker_t * w) {
 
+    if (NULL == w) {
+        avd_log_info("Stale connection\n\tsockfd : %d\n\tpoll_id : %d",sockfd, poll_id);
+        return;
+    }
+
     srvr->n_clients--;
     close(sockfd);
     srvr->poller[poll_id].fd = -1;
-
-    if (NULL == w) {
-        avd_log_info("Cleared stale connection\n\tsockfd : %d\n\tpoll_id : %d",sockfd, poll_id);
-        return;
-    }
 
     avd_log_info("Worker connection closed. Worker id : %d", w->id);
     avd_log_debug("sockfd : %d, ", w->conn.sockfd);
@@ -445,6 +445,7 @@ int32_t process_worker_msg(server_t *srvr, int32_t sockfd, message_t *msg, worke
 
             if (is_msg_type(msg->hdr.type, AVD_MSG_F_FILE_OUT_FIN)) {
                 w->file_seq_no = 1;
+                update_task_field_by_id_s_sess(w->uname, w->tid, "output_recv", cJSON_CreateTrue());
                 avd_log_info("Created Output file : %s", w->output_file);
             } else {
                 w->file_seq_no += 1;
@@ -480,7 +481,7 @@ void worker_communications(server_t *srvr, int nready) {
             continue;
         }
 
-        worker_t *w= get_worker_from_sockfd(srvr, sockfd);
+        worker_t *w = get_worker_from_sockfd(srvr, sockfd);
         if (NULL == w) {
             close_worker_connection(srvr, sockfd, i, w);
             continue;

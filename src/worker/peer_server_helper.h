@@ -101,7 +101,7 @@ int32_t process_ps_msg(int32_t sockfd, message_t *msg, peer_server_t *ps) {
     switch(msg->hdr.type) {
         case AVD_MSG_F_IN_POLL:{
             int32_t rc;
-            avd_log_info("Recevied input poll");
+            avd_log_debug("Recevied input poll");
             if (worker_task_fin_w_sess()) {
                 message_t   res;
 
@@ -125,12 +125,18 @@ int32_t process_ps_msg(int32_t sockfd, message_t *msg, peer_server_t *ps) {
                     avd_log_debug("Cannot send file : %s:%s", ps->output_file, strerror(errno));
                     return -1;
                 }
-                avd_log_warn("Send input file. Updated output_sent to true");
+                avd_log_debug("Send input file. Updated output_sent to true");
                 update_worker_w_sess("output_sent", cJSON_CreateTrue());
             } else {
                 send_input_wait_to_peer(sockfd);
             }
             break;
+        }
+        case AVD_MSG_F_CLOSE: {
+            avd_log_info("Closing Peer server routine");
+            update_worker_w_sess("shutdown", cJSON_CreateTrue());
+            close(sockfd);
+            pthread_exit(NULL);
         }
         default:
             avd_log_error("Error");
@@ -158,31 +164,28 @@ void peer_communication (peer_server_t *ps) {
             }
         } else {
             avd_log_error("Error receiving header");
-            close_fd(sockfd);
+            // close_fd(sockfd);
         }
     }
 #undef sockfd
 }
 
-bool get_file_details(peer_server_t *ps) {
+bool get_details(peer_server_t *ps) {
     int32_t     rc;
     char        *str = NULL;
 
     if (0 > (rc = get_worker_type_w_sess())) {
-        avd_log_info("Waiting for worker type");
         goto bail;
     }
     ps->type = rc;
 
     if (NULL == (str = get_worker_out_file_w_sess())) {
-        avd_log_info("Waiting for worker output file");
         goto bail;
     }
     ps->output_file = (char *)malloc(strlen(str)+1);
     snprintf(ps->output_file, strlen(str)+1, "%s", str);
 
     if (NULL == (str = get_worker_in_file_w_sess())) {
-        avd_log_info("Waiting for worker input file");
         goto bail;
     }
     ps->input_file = (char *)malloc(strlen(str)+1);
@@ -208,11 +211,14 @@ void * peer_server_routine (void *arg) {
         exit(EXIT_FAILURE);
     }
 
-    while(!get_file_details(ps)) {
-        avd_log_debug("Waiting for worker id");
-        msleep(1000);
+    while(!get_details(ps)) {
+        avd_log_debug("Waiting for worker details");
+        msleep(500);
     }
 
+    if (ps->type == END_WORKER) {
+        pthread_exit(NULL);
+    }
     rc = accept(conn->sockfd, (struct sockaddr *)&p_addr, &sz);
     if (rc < 0) {
         rc = -errno;
@@ -232,5 +238,5 @@ void * peer_server_routine (void *arg) {
     peer_communication (ps);
 
 bail:
-    return NULL;
+    pthread_exit(NULL);;
 }

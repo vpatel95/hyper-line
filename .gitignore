@@ -36,6 +36,10 @@
 *.x86_64
 *.hex
 src/build/
+src/config/*.txt
+src/config/*.bin
+src/config/*.in
+src/config/*.out
 
 # Debug files
 *.dSYM/

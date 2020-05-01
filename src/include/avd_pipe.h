@@ -13,12 +13,14 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
+#include <sys/file.h>
+
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <net/if.h>
 #include <fcntl.h>
 #include <signal.h>
-#include <sys/wait.h>
 #include <poll.h>
 #include <limits.h>
 
@@ -77,6 +79,10 @@
 }
 #endif
 
+#ifndef ffd
+#define ffd(__fp)   fileno(__fp)
+#endif
+
 #define USER            1
 #define WORKER          2
 #define SERVER          3
@@ -129,6 +135,7 @@ typedef struct task_s {
     char        *name;
     char        *filename;
     char        *input_file;
+    char        *output_file;
     stage_t     stages[MAX_STAGES];
 } __attribute__((packed)) task_t;
 
@@ -607,6 +614,15 @@ static int32_t parse_user_cfg (cJSON *obj, user_t *user) {
         }
         task.input_file = (char *)malloc(strlen(v->valuestring)+1);
         snprintf(task.input_file, strlen(v->valuestring)+1,
+                 "%s", v->valuestring);
+
+        v = cJSON_GetObjectItem(tobj, "output");
+        if ((!v) || (!v->valuestring)) {
+            avd_log_error("Failed to find 'output' in task %d config", i);
+            return -1;
+        }
+        task.output_file = (char *)malloc(strlen(v->valuestring)+1);
+        snprintf(task.output_file, strlen(v->valuestring)+1,
                  "%s", v->valuestring);
 
         sobj_arr = cJSON_GetObjectItem(tobj, "stages");

@@ -84,6 +84,96 @@ int32_t user_init () {
     return conn_fd;
 }
 
+int32_t get_task_status(user_t *user) {
+    int32_t         i, rc = -1;
+    conn_info_t     *conn = &user->conn;
+
+    for (i = 0; i < user->num_tasks; i++) {
+
+        int32_t     sz;
+        int32_t     umsg_sz;
+        int32_t     data_sz;
+        message_t   msg;
+        message_t   rmsg;
+
+        memset(&msg, 0, sizeof(msg));
+        memset(&rmsg, 0, sizeof(rmsg));
+
+#define task user->tasks[i]
+        cJSON *v = get_task_field_u_sess(task.name, "fin");
+        if (!v) goto bail;
+
+        if (cJSON_IsTrue(v)) {
+            set_msg_type(msg.hdr.type, AVD_MSG_F_CLOSE);
+            msg.hdr.size = MSG_HDR_SZ;
+
+            if (0 > (rc = send(conn->sockfd, &msg, msg.hdr.size, 0))) {
+                rc = -errno;
+                avd_log_error("Task Connection Close error: %s\n", strerror(errno));
+                return rc;;
+            }
+
+            avd_log_info("Task Successfully Completed! Output is stored at %s",
+                         task.output_file);
+            close(conn->sockfd);
+            exit(EXIT_SUCCESS);
+        }
+
+        umsg_ts_t umsg;
+
+        umsg.uid = user->id;
+        umsg.uname = (char *)malloc(strlen(user->uname)+1);
+        snprintf(umsg.uname, strlen(user->uname)+1, "%s", user->uname);
+
+        umsg.tname = (char *)malloc(strlen(task.name)+1);
+        snprintf(umsg.tname, strlen(task.name)+1, "%s", task.name);
+
+        umsg_sz = umsg_ts_t_encoded_sz(&umsg);
+        data_sz = umsg_ts_t_encode(msg.buf, 0, umsg_sz, &umsg);
+
+        set_msg_type(msg.hdr.type, AVD_MSG_F_TASK_STATUS);
+        msg.hdr.size = MSG_HDR_SZ + data_sz;
+        msg.hdr.seq_no = 1;
+
+        rc = send(conn->sockfd, &msg, msg.hdr.size, 0);
+        if (rc < 0) {
+            avd_log_error("Task %s status send error: %s",
+                          task.name, strerror(errno));
+            continue;
+        }
+        avd_log_debug("Send task '%s' status.", task.name);
+
+        if (0 < recv_avd_hdr(conn->sockfd, &rmsg.hdr)) {
+            if (is_msg_type(rmsg.hdr.type, AVD_MSG_F_TASK_STATUS_R)) {
+                if (0 < (sz = (rmsg.hdr.size - MSG_HDR_SZ))) {
+                    rc = recv_avd_msg(conn->sockfd, rmsg.buf, sz);
+                }
+            } else {
+                avd_log_error("Expecting message type %d, received %d",
+                        AVD_MSG_F_TASK_STATUS_R, rmsg.hdr.type);
+                continue;
+            }
+        }
+
+        smsg_tsr_t  m;
+        smsg_tsr_t_decode(rmsg.buf, 0, sizeof(rmsg.buf), &m);
+
+        if (m.fin) {
+            if (0 != recv_file(task.output_file, conn->sockfd, AVD_MSG_F_FILE_OUT)) {
+                avd_log_error("Error receiving Task Output File");
+                return -1;
+            }
+
+            update_task_u_sess(m.name, "fin", cJSON_CreateTrue());
+        }
+
+#undef task
+    }
+
+bail:
+    return rc;
+}
+
 void server_communication (user_t *user) {
     int32_t         rc;
     message_t       rmsg;
@@ -102,6 +192,7 @@ void server_communication (user_t *user) {
     }
 
     while(true) {
+        get_task_status(user);
         msleep(500);
     }
 

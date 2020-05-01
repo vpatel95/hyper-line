@@ -33,8 +33,8 @@
     "worker" : {
         "uname": "vp",
         "log_file": "/var/log/avd_pipe_worker.log",
-        "log_level": 0,
-        "log_quiet": false,
+        "log_level": 1,
+        "log_quiet": true,
         "addr" : "192.168.33.10",
         "peer_port": 1195,
         "srvr_addr": "192.168.33.2",

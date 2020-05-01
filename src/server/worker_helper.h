@@ -8,7 +8,7 @@
 worker_t * get_worker_from_sockfd(server_t *srvr, int32_t sockfd) {
     int32_t     idx;
     worker_t    *w;
-    for (idx = 0; idx < srvr->n_clients; idx++) {
+    for (idx = 0; idx < MAX_WORKER; idx++) {
         w= &srvr->workers[idx];
         if (w->conn.sockfd == sockfd) {
             return w;
@@ -20,14 +20,14 @@ worker_t * get_worker_from_sockfd(server_t *srvr, int32_t sockfd) {
 
 void close_worker_connection(server_t *srvr, int32_t sockfd, int32_t poll_id, worker_t * w) {
 
+    if (NULL == w) {
+        avd_log_info("Stale connection\n\tsockfd : %d\n\tpoll_id : %d",sockfd, poll_id);
+        return;
+    }
+
     srvr->n_clients--;
     close(sockfd);
     srvr->poller[poll_id].fd = -1;
-
-    if (NULL == w) {
-        avd_log_info("Cleared stale connection\n\tsockfd : %d\n\tpoll_id : %d",sockfd, poll_id);
-        return;
-    }
 
     avd_log_info("Worker connection closed. Worker id : %d", w->id);
     avd_log_debug("sockfd : %d, ", w->conn.sockfd);
@@ -395,6 +395,66 @@ int32_t process_worker_msg(server_t *srvr, int32_t sockfd, message_t *msg, worke
 
             break;
         }
+        case AVD_MSG_F_TASK_FIN: {
+
+            wmsg_tf_t   m;
+            cJSON       *v = NULL;
+
+            if (0 < (sz = msg->hdr.size - MSG_HDR_SZ)) {
+                if (0 > (rc = recv_avd_msg(sockfd, msg->buf, sz))) {
+                    return rc;
+                }
+            }
+
+            wmsg_tf_t_decode(msg->buf, 0, rc, &m);
+            avd_log_debug("TFIN Msg ::: Tid:%d | Uname:%s", m.tid, m.uname);
+
+            v = get_task_field_by_id_s_sess(m.uname, m.tid, "output_file");
+
+            w->output_file = (char *)malloc(strlen(v->valuestring)+1);
+            snprintf(w->output_file, strlen(v->valuestring)+1, "%s", v->valuestring);
+
+            update_task_field_by_id_s_sess(m.uname, m.tid, "task_fin", cJSON_CreateTrue());
+
+            break;
+        }
+        case AVD_MSG_F_FILE_OUT:
+        case AVD_MSG_F_FILE_OUT_FIN: {
+            FILE        *fp = NULL;
+
+            if (w->file_seq_no != msg->hdr.seq_no) {
+                avd_log_error("Out of order message. Expecting seq %d, Received %d",
+                        w->file_seq_no, msg->hdr.seq_no);
+                return -1;
+            }
+
+            if (0 < (sz = msg->hdr.size - MSG_HDR_SZ)) {
+                rc = recv_avd_msg(sockfd, msg->buf, sz);
+                if (0 > rc) {
+                    return rc;
+                }
+            }
+
+            if (w->file_seq_no == 1) {
+                fp = fopen(w->output_file, "wb+");
+            } else {
+                fp = fopen(w->output_file, "ab+");
+            }
+
+            fwrite(msg->buf, rc, 1, fp);
+
+            if (is_msg_type(msg->hdr.type, AVD_MSG_F_FILE_OUT_FIN)) {
+                w->file_seq_no = 1;
+                update_task_field_by_id_s_sess(w->uname, w->tid, "output_recv", cJSON_CreateTrue());
+                avd_log_info("Created Output file : %s", w->output_file);
+            } else {
+                w->file_seq_no += 1;
+            }
+
+            fclose(fp);
+
+            break;
+        }
         case AVD_MSG_F_CLOSE: {
             remove_worker_s_sess(w->id);
             close_worker_connection(srvr, sockfd, w->poll_id, w);
@@ -421,7 +481,7 @@ void worker_communications(server_t *srvr, int nready) {
             continue;
         }
 
-        worker_t *w= get_worker_from_sockfd(srvr, sockfd);
+        worker_t *w = get_worker_from_sockfd(srvr, sockfd);
         if (NULL == w) {
             close_worker_connection(srvr, sockfd, i, w);
             continue;

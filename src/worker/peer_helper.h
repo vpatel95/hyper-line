@@ -134,7 +134,21 @@ bool input_ready(peer_t *p) {
     memset(&msg, 0, sizeof(msg));
     memset(&rmsg, 0, sizeof(rmsg));
 
-    if(!worker_get_input_w_sess()) {
+    if (worker_shutdown_w_sess()) {
+        set_msg_type(msg.hdr.type, AVD_MSG_F_CLOSE);
+        msg.hdr.size = MSG_HDR_SZ;
+        msg.hdr.seq_no = 1;
+
+        if (0 > (rc = send(ps->sockfd, &msg, msg.hdr.size, 0))) {
+            avd_log_error("Task poll error: %s", strerror(errno));
+            goto bail;
+        }
+
+        close(ps->sockfd);
+        pthread_exit(NULL);
+    }
+
+    if(!worker_get_input_w_sess() && !worker_task_fin_w_sess()) {
         goto bail;
     }
 
@@ -149,6 +163,16 @@ bool input_ready(peer_t *p) {
     avd_log_debug("Input Poll");
 
     if (0 < recv_avd_hdr(ps->sockfd, &rmsg.hdr)) {
+        if (is_msg_type(rmsg.hdr.type, AVD_MSG_F_TASK_FIN)) {
+            if (0 < (sz = (rmsg.hdr.size - MSG_HDR_SZ))) {
+                rc = recv_avd_msg(ps->sockfd, rmsg.buf, sz);
+            }
+
+            update_worker_w_sess("task_fin", cJSON_CreateTrue());
+            update_worker_w_sess("input_recv", cJSON_CreateTrue());
+            return true;
+        }
+
         if (is_msg_type(rmsg.hdr.type, AVD_MSG_F_IN_POLL_TR)) {
             if (0 < (sz = (rmsg.hdr.size - MSG_HDR_SZ))) {
                 rc = recv_avd_msg(ps->sockfd, rmsg.buf, sz);
@@ -158,9 +182,10 @@ bool input_ready(peer_t *p) {
                 avd_log_error("Error occured while receiving input from peer");
                 return false;
             }
-            avd_log_warn("Recevied input file. Updated input_recv to true");
-            update_worker_w_sess("input_recv", cJSON_CreateTrue());
+            avd_log_debug("Updated get_input to false");
             update_worker_w_sess("get_input", cJSON_CreateFalse());
+            avd_log_debug("Recevied input file. Updated input_recv to true");
+            update_worker_w_sess("input_recv", cJSON_CreateTrue());
 
             return true;
         }else if (is_msg_type(rmsg.hdr.type, AVD_MSG_F_IN_POLL_FL)) {
@@ -213,5 +238,5 @@ static void * peer_routine (void * arg) {
     }
 
 bail:
-    return NULL;
+    pthread_exit(NULL);;
 }

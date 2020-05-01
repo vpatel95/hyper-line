@@ -35,7 +35,7 @@ clean::
 
 $(SHARED_LIB_TARGETS): $(OBJS)
 	@echo $(LOG_PREFIX) Linking $@ $(LOG_SUFFIX)
-	@$(CC) -shared $(LIBS) -o $@ $^
+	@$(CC) -shared -Wl,-soname,$@ -o $@ $^ $(LIBS)
 
 $(STATIC_LIB_TARGETS): $(OBJS)
 	@echo $(LOG_PREFIX) Linking $2 $(LOG_SUFFIX)

@@ -1,7 +1,7 @@
 CC  := gcc
 CXX := g++
 
-CFLAGS ?= -ggdb3 -fPIC -Wall -Wno-misleading-indentation $(INCLUDE)
+CFLAGS ?= -ggdb3 -O3 -fPIC -Wall -Wno-misleading-indentation $(INCLUDE)
 CXXFLAGS ?= $(CFLAGS) -std=c++11
 
 SRCS ?= $(wildcard *.c) $(addprefix $(LIB_DIR), $(CUSTOM_LIBS))

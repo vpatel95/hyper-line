@@ -91,10 +91,10 @@
 #define MID_WORKER      2
 #define END_WORKER      3
 
-#define MAX_USER        1
 #define MAX_TASK        1
+#define MAX_USER        2
 #define MAX_STAGES      5
-#define MAX_WORKER      5
+#define MAX_WORKER      6
 
 #define MAX_USER_POLL   MAX_USER + 1
 #define MAX_WORKER_POLL MAX_WORKER + 1
@@ -206,7 +206,7 @@ typedef struct server_s {
         user_t          users[MAX_USER];
         worker_t        workers[MAX_WORKER];
     };
-} __attribute__((packed)) server_t;
+} server_t;
 
 typedef struct server_conf_s {
     uint16_t    uport;

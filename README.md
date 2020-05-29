@@ -1,18 +1,53 @@
-# AVD Pipeline
----
-A Distributed Pipeline, which aims to provide an infrastructure to connect the hardware resources and divide the ’pipelinable tasks’ into stages and process them in parallel and in order, synonymous to an assembly line of a software task.
+<p align="center">
+  <a href="" rel="noopener">
+ <img width=200px height=200px src="https://i.imgur.com/6wj0hh6.jpg" alt="Project logo"></a>
+</p>
 
-## Build
+<h3 align="center">Hyper Line</h3>
+
 ---
-To build the project, execute the following commands at the `src` drirectory the project directory  
+
+<p align="center">
+    A Distributed Pipeline, which aims to provide an infrastructure to connect the hardware resources and divide the ’pipelinable tasks’ into stages and process them in parallel and in order, synonymous to an assembly line of a software task.
+    <br>
+</p>
+
+## Table of Contents
+- [About](#about)
+- [Getting Started](#getting_started)
+- [Deployment](#deployment)
+- [Usage](#usage)
+- [Built Using](#built_using)
+- [Contributing](../CONTRIBUTING.md)
+- [Authors](#authors)
+
+## About <a name = "about"></a>
+Hyper Line is a generic pipeline architecture for distributed system environment which can run any application that can be divided into arbitrary number of sub-tasks such that the each sub-task running on a different worker node and can send its output to another worker node running another sub-task and utilizing the output from the previous stage as input for itself. The final output is returned to the server which in turn passes it to the user of the application.
+
+## Getting Started <a name = "getting_started"></a>
+These instructions will get you a copy of the project up and running on your local machine for development and testing purposes.
+
+### Prerequisites
+This pipeline runs on Linux Machines. That is the only prerequisite for this project
+
+### Installing <a name = "install"></a>
+To download and build the project, execute the following commands at the `src` drirectory the project directory  
 ```   
+	git clone https://github.com/vpatel95/hyper-line
+	cd hyper-line/src
 	make clean        
 	make
 ```  
 This will generate binaries for all the components in the `build` directory
 
-## Usage
----
+
+## Testing <a name = "tests"></a>
+Two applications have been included in the project for the purpose of testing.
+
+- Symmetric Key Encryption
+- Sequential Arthmetic Operation
+
+## Usage <a name="usage"></a>
 There are three components of the system. Each component will run on seperate machines.
 
 ### Server
@@ -123,5 +158,13 @@ To run the worker follow the given steps.
 
 Run the worker using `./avd_worker <config_file>`
 
+## Deployment <a name = "deployment"></a>
+It does not require any special steps for deployment. Same steps for [Installing](#install) and [Usage](#usage) can be followed.
 
+## Built Using <a name = "built_using"></a>
+- [C] - Programming Language
 
+## Authors <a name = "authors"></a>
+- [@vpatel95](https://github.com/vpatel95)
+
+See also the list of [contributors](https://github.com/vpatel96/hyper-line/contributors) who participated in this project.

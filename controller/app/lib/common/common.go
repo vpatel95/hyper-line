@@ -2,7 +2,6 @@ package common
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -68,19 +67,4 @@ func SetCookie(w http.ResponseWriter, name string, value string) {
 		Expires: expire,
 	}
 	http.SetCookie(w, &cookie)
-}
-
-// Authentication middleware
-func Auth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Printf("[%s] ::: Implement Authentication Middleware\n", r.URL.Path)
-		next.ServeHTTP(w, r)
-	})
-}
-
-func UserAuth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Printf("[%s] ::: Implement User Authentication Middleware\n", r.URL.Path)
-		next.ServeHTTP(w, r)
-	})
 }

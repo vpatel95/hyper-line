@@ -1,0 +1,11 @@
+{
+    "cookie_name": "sessionid",
+    "cleaner_interval": 60,
+    "max_lifetime": 172800,
+    "http_only": true,
+    "secure": false,
+    "cookie_lifetime": 172800,
+    "domain": "",
+    "enable_http_header": false,
+    "sess_header": ""
+}

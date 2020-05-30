@@ -5,8 +5,8 @@ import (
 
 	valid "github.com/asaskevich/govalidator"
 
-	"hyperline-controller/app/model"
 	"hyperline-controller/database"
+	"hyperline-controller/app/model"
 )
 
 var (

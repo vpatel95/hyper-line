@@ -1,26 +1,28 @@
-package apiv1
+package auth
 
 import (
 	"encoding/json"
-	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"net/url"
-	"os"
-	"time"
+	"path/filepath"
 
 	jwt "github.com/dgrijalva/jwt-go"
-	"github.com/gorilla/mux"
 	"golang.org/x/crypto/bcrypt"
 
-	"hyperline-controller/app/api/common"
+	"hyperline-controller/app/lib/common"
+	sess "hyperline-controller/app/lib/session"
+	"hyperline-controller/app/lib/validation"
 	"hyperline-controller/app/model"
-	"hyperline-controller/app/validation"
 	"hyperline-controller/database"
+	"hyperline-controller/env"
 )
 
 type JSON = map[string]interface{}
 type User = model.User
+
+var sessManager = sess.SessManager
 
 func hash(password string) (string, error) {
 	bytes, err := bcrypt.GenerateFromPassword([]byte(password), 12)
@@ -33,25 +35,22 @@ func matchHash(password string, hash string) bool {
 }
 
 func generateToken(data JSON) (string, error) {
-	date := time.Now().Add(time.Hour * 24 * 7)
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"user":    data,
-		"expires": date.Unix(),
+		"user": data,
 	})
 
-	pwd, _ := os.Getwd()
-	keyPath := pwd + "/jwtsecret.key"
+	keyPath := filepath.Join(env.JWTSecret)
 
 	key, err := ioutil.ReadFile(keyPath)
 	if err != nil {
-		fmt.Println("GenerateToken : Key file read error = " + err.Error())
+		log.Println("GenerateToken : Key file read error = " + err.Error())
 		return "", err
 	}
 
 	tokenStr, err := token.SignedString(key)
 	if err != nil {
-		fmt.Println("GenerateToken : Token string error = " + err.Error())
+		log.Println("GenerateToken : Token string error = " + err.Error())
 	}
 
 	return tokenStr, err
@@ -72,7 +71,7 @@ func CreateCookie(name, value string, maxAge int, path, domain string,
 }
 
 func register(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("In User Create")
+	log.Println("In User Create")
 	var user User
 	var err error
 
@@ -103,7 +102,7 @@ func register(w http.ResponseWriter, r *http.Request) {
 }
 
 func login(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("In User Login")
+	log.Println("In User Login")
 
 	type RequestBody struct {
 		Username string `json:"username"`
@@ -140,17 +139,11 @@ func login(w http.ResponseWriter, r *http.Request) {
 	serializedUser := user.Serialize()
 	token, _ := generateToken(serializedUser)
 
-	cookie := CreateCookie("token", token, 60*60*24*7, "/", "", false, true)
+	cookie := CreateCookie(sessManager.Config.CookieName, token,
+		sessManager.Config.CookieLifetime, "/", "", false, true)
 	http.SetCookie(w, &cookie)
 
 	common.RespondJSON(w, http.StatusCreated, JSON{
 		"message": "success",
 	})
-}
-
-func SetAuthRoutes(router *mux.Router) {
-	authRoute := router.PathPrefix("/auth").Subrouter()
-
-	common.Post(authRoute, "/login", login)
-	common.Post(authRoute, "/register", register)
 }

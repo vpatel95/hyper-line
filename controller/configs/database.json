@@ -1,0 +1,8 @@
+{
+    "host": "localhost",
+    "port": 3306,
+    "username": "hyperline",
+    "password": "hyperline",
+    "dbname": "hyperline",
+    "charset": "utf8"
+}

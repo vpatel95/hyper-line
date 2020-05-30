@@ -25,6 +25,13 @@ func (u *User) Serialize() JSON {
 	}
 }
 
+func (u *User) Load(data JSON) {
+	u.ID = uint(data["id"].(float64))
+	u.Name = data["name"].(string)
+	u.Username = data["username"].(string)
+	u.Email = data["email"].(string)
+}
+
 // User Migration changes. Update this whenever user table is modified
 func MigrateUser(db *gorm.DB) *gorm.DB {
 	db.AutoMigrate(&User{})

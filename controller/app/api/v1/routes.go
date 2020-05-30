@@ -2,11 +2,14 @@ package apiv1
 
 import (
 	"github.com/gorilla/mux"
+
+	"hyperline-controller/app/api/v1/auth"
+	"hyperline-controller/app/api/v1/users"
 )
 
 func SetRoutes(router *mux.Router) {
-	apiv1 := router.PathPrefix("/v1").Subrouter()
+	route := router.PathPrefix("/v1").Subrouter()
 
-	SetAuthRoutes(apiv1)
-	SetUserRoutes(apiv1)
+	auth.Routes(route)
+	users.Routes(route)
 }

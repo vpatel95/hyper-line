@@ -1,3 +1,4 @@
+###################### C - Core HyperLine ########################
 # Prerequisites
 *.d
 
@@ -60,3 +61,8 @@ dkms.conf
 # cscope and tags
 cscope.out
 tags
+
+###################### React UI ########################
+package-lock.json
+node_modules
+controller/ui/build

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -124,9 +125,12 @@ func (sm *SessionManager) GetSessionId(r *http.Request) (string, error) {
 	if err != nil || cookie.Value == "" {
 
 		if sm.Config.EnableHttpHeader {
-			sids, found := r.Header[sm.Config.SessionHeader]
-			if found && len(sids) != 0 {
-				return sids[0], nil
+			auth := r.Header.Get("Authorization")
+			if auth != "" {
+				token := strings.Split(auth, "Bearer ")
+				if len(token) > 0 {
+					return token[1], nil
+				}
 			}
 		}
 

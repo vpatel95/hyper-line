@@ -12,17 +12,19 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"hyperline-controller/app/lib/common"
-	sess "hyperline-controller/app/lib/session"
+	"hyperline-controller/app/lib/session"
 	"hyperline-controller/app/lib/validation"
 	"hyperline-controller/app/model"
 	"hyperline-controller/database"
 	"hyperline-controller/env"
 )
 
-type JSON = map[string]interface{}
-type User = model.User
+type (
+	JSON = map[string]interface{}
+	User = model.User
+)
 
-var sessManager = sess.SessManager
+var sessManager = session.SessManager
 
 func hash(password string) (string, error) {
 	bytes, err := bcrypt.GenerateFromPassword([]byte(password), 12)

@@ -6,11 +6,17 @@ import (
 
 	"hyperline-controller/app/lib/common"
 	"hyperline-controller/app/lib/session"
+	"hyperline-controller/database"
+
+	_ "github.com/gorilla/mux"
 )
 
 type Session = session.Session
 
-var SessManager = session.SessManager
+var (
+	db          = database.DB
+	sessManager = session.SessManager
+)
 
 func index(w http.ResponseWriter, r *http.Request) {
 	log.Println("In User Get")

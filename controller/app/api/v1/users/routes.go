@@ -11,9 +11,9 @@ func Routes(router *mux.Router) {
 	route := router.PathPrefix("/user").Subrouter()
 	route.Use(middleware.ValidateSessionID, middleware.Authorization)
 
-	common.Get(route, "/{username}", get)
+	common.Get(route, "/{id}", get)
 	common.Get(route, "/all", index)
 	common.Post(route, "/create", create)
-	common.Put(route, "/{username}", update)
-	common.Delete(route, "/{username}", delete)
+	common.Put(route, "/{id}", update)
+	common.Delete(route, "/{id}", delete)
 }

@@ -1,0 +1,52 @@
+{
+  "name": "hyperline-controller",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.js",
+  "proxy": "http://localhost:5000",
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject",
+    "install:clean": "rm -rf node_modules/ && rm -rf package-lock.json && npm install && npm start",
+    "compile-sass": "node-sass src/assets/scss/hyperline-controller.scss src/assets/css/hyperline-controller.css",
+    "minify-sass": "node-sass src/assets/scss/hyperline-controller.scss src/assets/css/hyperline-controller.min.css --output-style compressed",
+    "map-sass": "node-sass src/assets/scss/hyperline-controller.scss src/assets/css/hyperline-controller.css --source-map true"
+  },
+  "dependencies": {
+    "@fortawesome/fontawesome-free": "5.12.1",
+    "axios": "0.19.2",
+    "chart.js": "2.9.3",
+    "classnames": "2.2.6",
+    "moment": "2.24.0",
+    "node-sass": "^4.14.1",
+    "nouislider": "14.1.1",
+    "react": "16.12.0",
+    "react-chartjs-2": "2.9.0",
+    "react-copy-to-clipboard": "5.0.2",
+    "react-datetime": "2.16.3",
+    "react-dom": "16.12.0",
+    "react-google-maps": "9.4.5",
+    "react-router-dom": "5.1.2",
+    "react-scripts": "3.4.0",
+    "react-toastify": "^6.0.5",
+    "reactstrap": "8.4.1",
+    "store": "^2.0.12"
+  },
+  "eslintConfig": {
+    "extends": "react-app"
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  }
+}

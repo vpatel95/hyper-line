@@ -33,7 +33,7 @@ func (u *User) Serialize() JSON {
 }
 
 func (u *User) Load(data JSON) {
-	u.ID = data["id"].(uint)
+	u.ID = uint(data["id"].(float64))
 	u.Name = data["name"].(string)
 	u.Username = data["username"].(string)
 	u.Email = data["email"].(string)

@@ -80,7 +80,7 @@ func (s *Session) Get(key interface{}) interface{} {
 
 func (s *Session) Exist(key interface{}) bool {
 	s.lock.RLock()
-	defer s.lock.Unlock()
+	defer s.lock.RUnlock()
 
 	if _, ok := s.value[key]; ok {
 		return true
@@ -186,9 +186,9 @@ func (sm *SessionManager) SessionRead(r *http.Request) (*Session, error) {
 	}
 
 	sm.lock.RLock()
+	defer sm.lock.RUnlock()
 	if ele, ok := sm.sessions[sid]; ok {
 		go sm.SessionUpdate(sid)
-		sm.lock.RUnlock()
 
 		return ele.Value.(*Session), nil
 	}
